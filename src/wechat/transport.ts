@@ -320,7 +320,8 @@ function requireMicroRequestContext(
     || !bounded(value.aid, 1_024, true)
     || !bounded(value.pageUrl, 8 * 1_024, true)
     || !bounded(value.commonBody.logFinderId, 1_024, true)
-    || !bounded(value.commonBody.logFinderUin, 1_024, false)
+    || (value.commonBody.logFinderUin !== null
+      && !bounded(value.commonBody.logFinderUin, 1_024, false))
     || !bounded(value.commonBody.rawKeyBuff, 16 * 1_024, false)
     || (value.commonBody.pluginSessionId !== null
       && !bounded(value.commonBody.pluginSessionId, 4 * 1_024, false))

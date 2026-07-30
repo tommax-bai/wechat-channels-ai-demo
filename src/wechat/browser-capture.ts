@@ -248,7 +248,7 @@ export function parseCapturedAuthRequest(
         false,
       );
     }
-    const logFinderUin = boundedString(
+    const logFinderUin = nullableBoundedString(
       body._log_finder_uin,
       MAX_COMMON_VALUE_BYTES,
     );

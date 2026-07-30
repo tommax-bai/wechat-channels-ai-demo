@@ -654,6 +654,8 @@ describe("PrivateWechatGateway parsers", () => {
       },
     }));
     const session = fakePlatformSession();
+    if (!session.requestContext) throw new Error("missing request context");
+    session.requestContext.commonBody.logFinderUin = null;
 
     await gateway.syncComments(session, null);
     await gateway.sendReply(
@@ -684,7 +686,7 @@ describe("PrivateWechatGateway parsers", () => {
       expect(call.headers.get("finger-print-device-id")).toBe("fingerprint-test");
       expect(call.body).toMatchObject({
         _log_finder_id: "finder-self",
-        _log_finder_uin: "",
+        _log_finder_uin: null,
         rawKeyBuff: "",
         scene: 7,
         reqScene: 7,

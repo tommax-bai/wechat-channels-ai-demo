@@ -31,7 +31,7 @@ export interface WechatRequestContext {
   pageUrl: string;
   commonBody: {
     logFinderId: string;
-    logFinderUin: string;
+    logFinderUin: string | null;
     rawKeyBuff: string;
     pluginSessionId: string | null;
     reqScene: number;

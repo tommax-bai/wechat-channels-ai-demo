@@ -29,7 +29,7 @@ describe("first-party WeChat request context capture", () => {
       pageUrl: "https://channels.weixin.qq.com/platform/post/list",
       commonBody: {
         logFinderId: "finder-self",
-        logFinderUin: "",
+        logFinderUin: null,
         rawKeyBuff: "",
         pluginSessionId: null,
         reqScene: 7,
@@ -232,7 +232,7 @@ function validCapture(): CapturedAuthRequest {
       + "&_pageUrl=https%3A%2F%2Fchannels.weixin.qq.com%2Fplatform%2Fpost%2Flist",
     postData: JSON.stringify({
       _log_finder_id: "finder-self",
-      _log_finder_uin: "",
+      _log_finder_uin: null,
       rawKeyBuff: "",
       pluginSessionId: null,
       reqScene: 7,
