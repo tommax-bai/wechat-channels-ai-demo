@@ -106,9 +106,11 @@ Polling the page API would work but adds latency and repeated reads. WebSockets 
 
 For the initial DEV deployment, the service uses an isolated verified Node.js 22
 runtime, a dedicated unprivileged system user, a root-owned environment file,
-and a loopback-only listener. Public access remains blocked until the operator
-assigns an HTTPS hostname; DEV's existing public HTTP listeners are not an
-acceptable credential transport.
+and a loopback-only listener. A deployment-only insecure-cookie override permits
+access through the local side of an SSH tunnel; production still defaults to a
+Secure cookie. Public access remains blocked until the operator assigns an HTTPS
+hostname; DEV's existing public HTTP listeners are not an acceptable credential
+transport.
 
 ## Open Questions
 

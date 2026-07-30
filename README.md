@@ -55,6 +55,7 @@ If `ARK_API_KEY` is empty, QR login and read-only UI can still run, but automati
 | Variable | Purpose | Default |
 |---|---|---|
 | `SESSION_ENCRYPTION_KEY` | Base64 or 64-hex 32-byte AES key | required |
+| `SESSION_COOKIE_SECURE` | Require HTTPS for the browser session cookie | production: `1`, otherwise `0` |
 | `DATABASE_PATH` | Isolated SQLite database | `./data/demo.sqlite` |
 | `SESSION_TTL_MS` | Absolute Demo session retention | `24h` in code, `8h` in example |
 | `MAX_ACTIVE_SESSIONS` | Concurrent unexpired visitor cap | `100` |

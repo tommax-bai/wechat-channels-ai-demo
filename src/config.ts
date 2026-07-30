@@ -13,6 +13,7 @@ const schema = z.object({
   PUBLIC_ORIGIN: z.string().url().optional(),
   DATABASE_PATH: z.string().default("./data/demo.sqlite"),
   SESSION_COOKIE_NAME: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).default("wechat_demo_session"),
+  SESSION_COOKIE_SECURE: booleanString.optional(),
   SESSION_ENCRYPTION_KEY: z.string().min(1),
   SESSION_TTL_MS: z.coerce.number().int().min(60_000).default(24 * 60 * 60 * 1_000),
   QR_TTL_MS: z.coerce.number().int().min(30_000).default(4 * 60 * 1_000),
@@ -39,6 +40,7 @@ export type AppConfig = Readonly<{
   publicOrigin?: string;
   databasePath: string;
   sessionCookieName: string;
+  sessionCookieSecure: boolean;
   encryptionKey: Buffer;
   sessionTtlMs: number;
   qrTtlMs: number;
@@ -62,6 +64,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = schema.parse(env);
   const encryptionKey = decodeEncryptionKey(parsed.SESSION_ENCRYPTION_KEY);
   const databasePath = resolve(parsed.DATABASE_PATH);
+  const sessionCookieSecure =
+    parsed.SESSION_COOKIE_SECURE ?? parsed.NODE_ENV === "production";
+  if (
+    parsed.NODE_ENV === "production"
+    && !sessionCookieSecure
+    && !["127.0.0.1", "::1", "localhost"].includes(parsed.HOST)
+  ) {
+    throw new Error(
+      "SESSION_COOKIE_SECURE=0 is allowed in production only on a loopback HOST",
+    );
+  }
   mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
   return {
     nodeEnv: parsed.NODE_ENV,
@@ -70,6 +83,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...(parsed.PUBLIC_ORIGIN ? { publicOrigin: parsed.PUBLIC_ORIGIN } : {}),
     databasePath,
     sessionCookieName: parsed.SESSION_COOKIE_NAME,
+    sessionCookieSecure,
     encryptionKey,
     sessionTtlMs: parsed.SESSION_TTL_MS,
     qrTtlMs: parsed.QR_TTL_MS,
@@ -108,6 +122,7 @@ export function safeStartupSummary(config: AppConfig): Record<string, unknown> {
     listen: `${config.host}:${config.port}`,
     databasePath: config.databasePath,
     publicOriginConfigured: Boolean(config.publicOrigin),
+    secureSessionCookie: config.sessionCookieSecure,
     autoReplyEnabled: config.autoReplyEnabled,
     workerConcurrency: config.workerConcurrency,
     modelConfigured: Boolean(config.arkApiKey),

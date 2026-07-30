@@ -59,7 +59,7 @@
 Validation 2026-07-30:
 - npm run lint: pass
 - npm run typecheck: pass
-- npm test: 4 files, 27 tests passed
+- npm test: 5 files, 29 tests passed
 - npm run build: pass
 - npm audit and npm audit --omit=dev: 0 vulnerabilities
 - openspec validate build-multi-user-wechat-ai-demo --strict: pass

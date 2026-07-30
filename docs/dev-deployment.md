@@ -15,6 +15,9 @@ runtime.
 
 The DEV service binds only to `127.0.0.1:4310`. This environment currently has
 no suitable HTTPS hostname, so the Demo must not be exposed over public HTTP.
+Its deployment-only `SESSION_COOKIE_SECURE=0` permits the loopback SSH tunnel;
+the production default remains secure, and this override must be removed when
+an HTTPS hostname is assigned.
 Use an SSH tunnel for operator validation:
 
 ```bash

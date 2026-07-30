@@ -48,3 +48,7 @@ Every session API and event stream MUST derive ownership from an opaque HttpOnly
 #### Scenario: Same platform account is already active
 - **WHEN** a second unexpired demo session completes login for a Finder identity already bound to another session
 - **THEN** the service rejects the second binding without revealing which visitor owns the first session
+
+#### Scenario: Production cookie security is configured
+- **WHEN** production starts without an explicit cookie override
+- **THEN** the session cookie is Secure, and an insecure production override is accepted only when the service listener is bound to a loopback host

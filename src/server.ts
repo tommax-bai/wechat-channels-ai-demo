@@ -205,7 +205,7 @@ function cookieOptions(config: AppConfig): {
     path: "/",
     httpOnly: true,
     sameSite: "lax",
-    secure: config.nodeEnv === "production",
+    secure: config.sessionCookieSecure,
     maxAge: Math.floor(config.sessionTtlMs / 1_000),
   };
 }

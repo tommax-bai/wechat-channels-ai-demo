@@ -29,6 +29,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     publicOrigin: "http://localhost:4310",
     databasePath: ":memory:",
     sessionCookieName: "wechat_demo_session",
+    sessionCookieSecure: false,
     encryptionKey: Buffer.alloc(32, 7),
     sessionTtlMs: 60 * 60 * 1_000,
     qrTtlMs: 4 * 60 * 1_000,
