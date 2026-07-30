@@ -286,7 +286,7 @@ function renderReply(item) {
   const box = document.createElement("div");
   box.className = "reply-box";
   const title = document.createElement("small");
-  title.textContent = "豆包回复";
+  title.textContent = "CHAT回复";
   const text = document.createElement("p");
   text.textContent = item.replyText || "正在生成…";
   const state = document.createElement("span");
