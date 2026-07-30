@@ -62,7 +62,7 @@
 - [x] 9.3 Align the browserless comment post-list request with the observed `userpageType=0` and `stickyOrder=false` parameters and cover the request contract in a platform-client test
 - [x] 9.4 Add regression coverage for preserving SSE on compatible origins and using fixed five-second authoritative snapshot polling on `.trycloudflare.com`
 - [x] 9.5 Deploy the committed build behind a public HTTPS Quick Tunnel with Secure cookies while retaining the loopback-only application listener
-- [ ] 9.6 Verify the public browser flow, global account switching, polling fallback, worker continuity after page closure, exact backend model access, and unchanged AIDCP/isales services
+- [x] 9.6 Verify the public browser flow, global account switching, polling fallback, worker continuity after page closure, exact backend model access, and unchanged AIDCP/isales services
 
 ## 10. Capture-backed comment repair
 
@@ -70,8 +70,8 @@
 - [x] 10.2 Implement an injectable one-time Playwright/Chrome session capturer with bounded exact-host request parsing, encrypted context persistence, cookie refresh, cleanup, and safe configuration diagnostics
 - [x] 10.3 Route comment post-list, comment-list, and comment-create through the capture-backed micro descriptors with exact query, header, JSON common-body, and referer contracts
 - [x] 10.4 Add capture/parser/transport/integration regressions and run lint, typecheck, tests, build, audit, and strict OpenSpec validation
-- [ ] 10.5 Install Chrome from the Alibaba Cloud mirror, deploy the committed build to DEV, request a fresh scan, and verify non-empty comment read before permitting an exact live comment reply
-- [ ] 10.6 Configure `https://dev.yytt.com.cn` with a valid certificate, dedicated Nginx reverse proxy, fixed `PUBLIC_ORIGIN`, Secure cookies, same-origin SSE, HTTP redirect, and unchanged unrelated server blocks/services
+- [x] 10.5 Install Chrome from the Alibaba Cloud mirror, deploy the committed build to DEV, request a fresh scan, and verify non-empty comment read before permitting an exact live comment reply
+- [x] 10.6 Configure `https://dev.yytt.com.cn` with a valid certificate, dedicated Nginx reverse proxy, fixed `PUBLIC_ORIGIN`, Secure cookies, same-origin SSE, HTTP redirect, and unchanged unrelated server blocks/services
 
 <!--
 Initial validation 2026-07-30:
@@ -111,4 +111,17 @@ Capture-backed comment repair validation 2026-07-30:
 - Browser capture regressions cover authoritative cookie replacement, invalid-candidate skipping, bounded cleanup, exact identity, and encrypted provisional-state persistence
 - Post-scan capture no longer evaluates page JavaScript during navigation turnover; unknown browser failures are projected as safe stage-specific codes
 - Comment regressions cover micro request query/header/body contracts, post pagination without post lastBuff, identity-bound cursors, nested context sanitization, and fail-closed missing session context
+
+DEV fixed-origin live acceptance 2026-07-30:
+- Final deployed code commit: 55d809087652f899853dc72d7014708c5d396bd0
+- npm test: 7 files, 55 tests passed
+- npm run lint, npm run typecheck, npm run build: pass
+- openspec validate build-multi-user-wechat-ai-demo --strict: pass
+- Google Chrome 147.0.7727.55 was installed from the Alibaba Cloud mirror after RPM signature verification; the one-time capture exited with no Chrome process left behind
+- A fresh QR scan advanced through capture-backed initialization, encrypted identity revalidation, baseline sync, and active automation
+- The live comment API returned one post and five top-level rows; two visitor comments with complete reply context were retained while self-authored comments remained excluded
+- Both visitor comments were queued only after explicit operator authorization; both model requests produced provider request IDs and both WeChat sends reached confirmed platform receipts
+- Final session projection: active automation, healthy completed comment baseline, two visible comments, and two confirmed comment replies
+- `https://dev.yytt.com.cn/healthz` returned 200 with successful TLS verification; HTTP redirects to HTTPS and the fixed origin retains same-origin SSE
+- Demo and Nginx remained active with Demo NRestarts=0; AIDCP Cloud and all four isales services remained active and were not restarted
 -->
