@@ -1,0 +1,13 @@
+services:
+  demo:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "4310:4310"
+    volumes:
+      - demo-data:/app/data
+
+volumes:
+  demo-data:
