@@ -63,6 +63,13 @@ const authErrorLabels = {
   browser_capture_cleanup_failed: "登录初始化未安全结束，请稍后重试。",
 };
 
+function authErrorLabel(code) {
+  return authErrorLabels[code]
+    || (typeof code === "string" && code.startsWith("browser_capture_")
+      ? "登录初始化失败，请刷新二维码重新扫码。"
+      : "登录授权需要更新，请刷新二维码重新扫码。");
+}
+
 let snapshot = null;
 let refreshing = false;
 let eventSource = null;
@@ -355,8 +362,7 @@ function renderQr(data) {
       : data.authState === "capturing_context"
         ? "扫码已确认，正在初始化评论连接，请稍候。"
       : data.authState === "auth_required"
-        ? authErrorLabels[data.authErrorCode]
-          || "登录授权需要更新，请刷新二维码重新扫码。"
+        ? authErrorLabel(data.authErrorCode)
         : "如二维码失效，可重新申请。";
 }
 

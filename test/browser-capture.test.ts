@@ -179,6 +179,28 @@ describe("first-party WeChat request context capture", () => {
     });
     expect(Date.now() - startedAt).toBeLessThan(500);
   });
+
+  it("projects a safe stage-specific error when browser context creation fails", async () => {
+    const browser = {
+      newContext: async () => {
+        throw new Error("raw browser context error");
+      },
+      close: async () => undefined,
+    } as unknown as Browser;
+    vi.spyOn(chromium, "launch").mockResolvedValue(browser);
+    const capturer = new PlaywrightWechatSessionCapturer({
+      baseUrl: "https://channels.weixin.qq.com",
+      executablePath: "/unused/chrome",
+      timeoutMs: 100,
+      headless: true,
+    });
+
+    await expect(capturer.capture(fakePlatformSession())).rejects.toMatchObject({
+      code: "browser_capture_context_failed",
+      endpoint: "authData",
+      ambiguous: false,
+    });
+  });
 });
 
 function validCapture(): CapturedAuthRequest {

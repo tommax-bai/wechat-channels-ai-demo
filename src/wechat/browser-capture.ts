@@ -23,6 +23,14 @@ const MAX_BROWSER_CLEANUP_MS = 5_000;
 const CREATOR_POST_PATH = "/platform/post/list";
 const AUTH_DATA_SUFFIX = "/auth/auth_data";
 type BrowserCookieParam = Parameters<BrowserContext["addCookies"]>[0][number];
+type BrowserCaptureStage =
+  | "launch"
+  | "new_context"
+  | "import_cookies"
+  | "new_page"
+  | "capture_request"
+  | "snapshot_cookies"
+  | "rebuild_cookie_jar";
 
 export interface WechatSessionCapturer {
   capture(session: PlatformSession): Promise<PlatformSession>;
@@ -63,6 +71,7 @@ export class PlaywrightWechatSessionCapturer implements WechatSessionCapturer {
     let browser: Browser | undefined;
     let result: PlatformSession | undefined;
     let failure: unknown;
+    let stage: BrowserCaptureStage = "launch";
     try {
       try {
         browser = await chromium.launch({
@@ -82,13 +91,17 @@ export class PlaywrightWechatSessionCapturer implements WechatSessionCapturer {
           false,
         );
       }
+      stage = "new_context";
       const context = await browser.newContext({
         userAgent: session.userAgent,
         locale: "zh-CN",
         viewport: { width: 1365, height: 900 },
       });
+      stage = "import_cookies";
       await context.addCookies(await cookiesForBrowser(session.cookieJar, this.baseUrl));
+      stage = "new_page";
       const page = await context.newPage();
+      stage = "capture_request";
       const captured = await waitForAuthDataRequest(
         page,
         `${this.baseUrl}${CREATOR_POST_PATH}`,
@@ -106,7 +119,7 @@ export class PlaywrightWechatSessionCapturer implements WechatSessionCapturer {
           false,
         );
       }
-      const userAgent = await page.evaluate(() => navigator.userAgent);
+      const userAgent = session.userAgent;
       if (
         typeof userAgent !== "string"
         || userAgent.length === 0
@@ -118,8 +131,11 @@ export class PlaywrightWechatSessionCapturer implements WechatSessionCapturer {
           false,
         );
       }
+      stage = "snapshot_cookies";
+      const browserCookies = await context.cookies();
+      stage = "rebuild_cookie_jar";
       const cookieJar = await rebuildCookieJarFromBrowserSnapshot(
-        await context.cookies(),
+        browserCookies,
         this.baseUrl,
       );
       result = {
@@ -131,7 +147,7 @@ export class PlaywrightWechatSessionCapturer implements WechatSessionCapturer {
         acquiredAt: Date.now(),
       };
     } catch (error) {
-      failure = error;
+      failure = normalizeBrowserCaptureFailure(error, stage);
     }
     if (browser) {
       try {
@@ -156,6 +172,23 @@ export class PlaywrightWechatSessionCapturer implements WechatSessionCapturer {
     }
     return result;
   }
+}
+
+function normalizeBrowserCaptureFailure(
+  error: unknown,
+  stage: BrowserCaptureStage,
+): WechatApiError {
+  if (error instanceof WechatApiError) return error;
+  const codeByStage: Record<BrowserCaptureStage, string> = {
+    launch: "browser_capture_unavailable",
+    new_context: "browser_capture_context_failed",
+    import_cookies: "browser_capture_cookie_import_failed",
+    new_page: "browser_capture_page_failed",
+    capture_request: "browser_capture_request_failed",
+    snapshot_cookies: "browser_capture_cookie_snapshot_failed",
+    rebuild_cookie_jar: "browser_capture_cookie_rebuild_failed",
+  };
+  return new WechatApiError(codeByStage[stage], "authData", false);
 }
 
 export function parseCapturedAuthRequest(

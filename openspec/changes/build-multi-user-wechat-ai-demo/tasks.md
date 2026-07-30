@@ -104,10 +104,11 @@ Shared-demo follow-up validation 2026-07-30:
 - The operator Mac's Clash Fake-IP route closes trycloudflare TLS, so a public-origin browser pass on that machine remains pending even though the public HTTPS path passes from DEV; keep 9.6 open
 
 Capture-backed comment repair validation 2026-07-30:
-- npm test: 7 files, 51 tests passed
+- npm test: 7 files, 52 tests passed
 - npm run lint, npm run typecheck, npm run build: pass
 - npm audit and npm audit --omit=dev: 0 vulnerabilities
 - openspec validate build-multi-user-wechat-ai-demo --strict: pass
 - Browser capture regressions cover authoritative cookie replacement, invalid-candidate skipping, bounded cleanup, exact identity, and encrypted provisional-state persistence
+- Post-scan capture no longer evaluates page JavaScript during navigation turnover; unknown browser failures are projected as safe stage-specific codes
 - Comment regressions cover micro request query/header/body contracts, post pagination without post lastBuff, identity-bound cursors, nested context sanitization, and fail-closed missing session context
 -->
