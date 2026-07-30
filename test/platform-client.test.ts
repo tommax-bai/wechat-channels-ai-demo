@@ -30,13 +30,15 @@ describe("PrivateWechatGateway parsers", () => {
   });
 
   it("keeps objectId distinct from exportId and uses exportId as comment reply target", async () => {
+    const postBodies: URLSearchParams[] = [];
     const transport = new WechatTransport({
       baseUrl: "https://channels.weixin.qq.com",
       timeoutMs: 1_000,
       maxResponseBytes: 100_000,
-      fetchImpl: async (input) => {
+      fetchImpl: async (input, init) => {
         const url = String(input);
         if (url.includes("/post/post_list")) {
+          postBodies.push(new URLSearchParams(String(init?.body)));
           return response({
             errCode: 0,
             data: {
@@ -89,6 +91,9 @@ describe("PrivateWechatGateway parsers", () => {
     expect(nextPage.hasMore).toBe(false);
     expect(nextPage.items[0]?.externalId).toBe("object-2:comment-1");
     expect(nextPage.items[0]?.target).toMatchObject({ postId: "export-10" });
+    expect(postBodies[0]?.get("userpageType")).toBe("0");
+    expect(postBodies[0]?.get("stickyOrder")).toBe("false");
+    expect(postBodies[0]?.has("onlyUnread")).toBe(false);
   });
 
   it("keeps a paginated comment bound to the same post when the post list reorders", async () => {

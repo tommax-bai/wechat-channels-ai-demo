@@ -110,6 +110,177 @@ describe("multi-user demo flow", () => {
     expect(states).toContain("auth_required");
   });
 
+  it("lists and switches shared logged-in sessions without replacing the browser session", async () => {
+    const server = requireApp(app);
+    const accountOwner = await bootstrap(server);
+    await startLogin(server, accountOwner.cookie);
+    await workers.runOnce();
+
+    const countBeforeAnonymousList = database
+      ?.prepare("SELECT COUNT(*) AS value FROM demo_sessions")
+      .get() as { value: number } | undefined;
+    const anonymousList = await server.inject({
+      method: "GET",
+      url: "/api/sessions",
+    });
+    expect(anonymousList.statusCode).toBe(200);
+    expect(anonymousList.headers["set-cookie"]).toBeUndefined();
+    expect(anonymousList.json<{ selectedSessionId: string | null }>().selectedSessionId)
+      .toBeNull();
+    const countAfterAnonymousList = database
+      ?.prepare("SELECT COUNT(*) AS value FROM demo_sessions")
+      .get() as { value: number } | undefined;
+    expect(countAfterAnonymousList?.value).toBe(countBeforeAnonymousList?.value);
+
+    const visitor = await bootstrap(server);
+    const listed = await server.inject({
+      method: "GET",
+      url: "/api/sessions",
+      headers: { cookie: visitor.cookie },
+    });
+    expect(listed.statusCode).toBe(200);
+    const shared = listed.json<{
+      selectedSessionId: string | null;
+      sessions: Array<{
+        sessionId: string;
+        accountDisplayName: string;
+        authState: string;
+      }>;
+    }>();
+    expect(shared.sessions).toHaveLength(1);
+    expect(shared.sessions[0]).toMatchObject({
+      accountDisplayName: "账号 finder-1",
+      authState: "active",
+    });
+
+    const selected = await server.inject({
+      method: "POST",
+      url: "/api/sessions/select",
+      headers: { cookie: visitor.cookie, origin: "http://localhost:4310" },
+      payload: { sessionId: shared.sessions[0]?.sessionId },
+    });
+    expect(selected.statusCode).toBe(200);
+    expect(selected.json<SessionSnapshot>().accountDisplayName).toBe("账号 finder-1");
+    const selectedCookie = responseCookie(
+      selected.headers["set-cookie"],
+      "wechat_demo_session_selected",
+    );
+    const switched = await snapshot(
+      server,
+      `${visitor.cookie}; ${selectedCookie}`,
+    );
+    expect(switched.accountDisplayName).toBe("账号 finder-1");
+
+    const created = await server.inject({
+      method: "POST",
+      url: "/api/sessions/new",
+      headers: {
+        cookie: `${visitor.cookie}; ${selectedCookie}`,
+        origin: "http://localhost:4310",
+      },
+      payload: {},
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json<SessionSnapshot>().authState).toBe("new");
+    const newOwnerCookie = responseCookie(
+      created.headers["set-cookie"],
+      "wechat_demo_session",
+    );
+    expect((await snapshot(server, newOwnerCookie)).authState).toBe("new");
+
+    const preserved = await server.inject({
+      method: "GET",
+      url: "/api/sessions",
+      headers: { cookie: newOwnerCookie },
+    });
+    expect(preserved.json<{ sessions: unknown[] }>().sessions).toHaveLength(1);
+  });
+
+  it("keeps shared mutations on the selected account and never falls back after an invalid selection", async () => {
+    const server = requireApp(app);
+    const a = await bootstrap(server);
+    await startLogin(server, a.cookie);
+    await workers.runOnce();
+    const b = await bootstrap(server);
+    await startLogin(server, b.cookie);
+    await workers.runOnce();
+
+    const listed = await server.inject({
+      method: "GET",
+      url: "/api/sessions",
+      headers: { cookie: b.cookie },
+    });
+    const sessions = listed.json<{
+      sessions: Array<{ sessionId: string; accountDisplayName: string }>;
+    }>().sessions;
+    const accountA = sessions.find(
+      (session) => session.accountDisplayName === "账号 finder-1",
+    );
+    if (!accountA) throw new Error("missing shared account A");
+
+    const selected = await server.inject({
+      method: "POST",
+      url: "/api/sessions/select",
+      headers: { cookie: b.cookie, origin: "http://localhost:4310" },
+      payload: { sessionId: accountA.sessionId },
+    });
+    const selectedCookie = responseCookie(
+      selected.headers["set-cookie"],
+      "wechat_demo_session_selected",
+    );
+    const selectedHeaders = {
+      cookie: `${b.cookie}; ${selectedCookie}`,
+      origin: "http://localhost:4310",
+    };
+    const stopped = await server.inject({
+      method: "POST",
+      url: "/api/session/automation",
+      headers: selectedHeaders,
+      payload: { enabled: false },
+    });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json<SessionSnapshot>().accountDisplayName).toBe("账号 finder-1");
+    expect(stopped.json<SessionSnapshot>().authState).toBe("stopped");
+    expect((await snapshot(server, a.cookie)).authState).toBe("stopped");
+    expect((await snapshot(server, b.cookie)).authState).toBe("active");
+
+    const refreshed = await server.inject({
+      method: "POST",
+      url: "/api/session/login",
+      headers: selectedHeaders,
+      payload: {},
+    });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.json<SessionSnapshot>().authState).toBe("qr_pending");
+    expect((await snapshot(
+      server,
+      `${b.cookie}; ${selectedCookie}`,
+    )).authState).toBe("qr_pending");
+    expect((await snapshot(server, b.cookie)).authState).toBe("active");
+
+    const invalidSelectedCookie = `wechat_demo_session_selected=${"x".repeat(43)}`;
+    const rejected = await server.inject({
+      method: "POST",
+      url: "/api/session/automation",
+      headers: {
+        cookie: `${b.cookie}; ${invalidSelectedCookie}`,
+        origin: "http://localhost:4310",
+      },
+      payload: { enabled: false },
+    });
+    expect(rejected.statusCode).toBe(401);
+    expect((await snapshot(server, b.cookie)).authState).toBe("active");
+
+    const invalidList = await server.inject({
+      method: "GET",
+      url: "/api/sessions",
+      headers: { cookie: `${b.cookie}; ${invalidSelectedCookie}` },
+    });
+    expect(invalidList.statusCode).toBe(200);
+    expect(invalidList.json<{ selectedSessionId: string | null }>().selectedSessionId)
+      .toBeNull();
+  });
+
   it("does not retry an irreversible send with an ambiguous outcome", async () => {
     const server = requireApp(app);
     const visitor = await bootstrap(server);
@@ -361,4 +532,16 @@ function requireSessionId(database: SqliteDatabase | undefined): string {
     | undefined;
   if (!row) throw new Error("missing demo session");
   return row.id;
+}
+
+function responseCookie(
+  header: string | string[] | undefined,
+  name: string,
+): string {
+  const values = Array.isArray(header) ? header : header ? [header] : [];
+  const cookie = values
+    .map((value) => value.split(";", 1)[0] ?? "")
+    .find((value) => value.startsWith(`${name}=`));
+  if (!cookie) throw new Error(`missing ${name} cookie`);
+  return cookie;
 }

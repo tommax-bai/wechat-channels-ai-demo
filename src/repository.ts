@@ -153,6 +153,17 @@ export class DemoRepository {
     return rows.map(mapSession);
   }
 
+  listUnexpiredSessions(now: number): SessionRow[] {
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM demo_sessions
+        WHERE expires_at > ? AND auth_state <> 'logged_out'
+        ORDER BY updated_at DESC
+      `)
+      .all(now) as RawSession[];
+    return rows.map(mapSession);
+  }
+
   touchSession(id: string, now: number, expiresAt: number): void {
     this.db.prepare("UPDATE demo_sessions SET updated_at = ?, expires_at = ? WHERE id = ?").run(now, expiresAt, id);
   }

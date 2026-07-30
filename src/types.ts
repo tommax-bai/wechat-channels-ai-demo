@@ -111,4 +111,12 @@ export interface SessionSnapshot {
     modelConfigured: boolean;
   };
 }
+
+export interface SharedSessionSummary {
+  sessionId: string;
+  accountDisplayName: string;
+  authState: AuthState;
+  automationEnabled: boolean;
+  expiresAt: number;
+}
 import type { SerializedCookieJar } from "tough-cookie";

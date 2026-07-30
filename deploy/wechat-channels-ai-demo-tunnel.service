@@ -1,0 +1,23 @@
+[Unit]
+Description=WeChat Channels Demo Quick Tunnel
+Wants=network-online.target wechat-channels-ai-demo.service
+After=network-online.target wechat-channels-ai-demo.service
+
+[Service]
+Type=simple
+User=wechat-demo
+Group=wechat-demo
+WorkingDirectory=/opt/wechat-channels-ai-demo
+ExecStart=/opt/wechat-channels-ai-demo/runtime/cloudflared-2026.7.3 tunnel --no-autoupdate --loglevel info --metrics 127.0.0.1:4311 --url http://127.0.0.1:4310
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

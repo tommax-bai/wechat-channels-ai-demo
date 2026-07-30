@@ -4,10 +4,10 @@
 - [x] 1.2 Add validated environment configuration and safe startup diagnostics
 - [x] 1.3 Add Fastify bootstrap, static asset serving, health endpoint, and graceful shutdown
 
-## 2. Multi-user persistence and credential security
+## 2. Multi-account persistence and credential security
 
 - [x] 2.1 Add SQLite migrations and repositories for demo sessions, encrypted platform credentials, source baselines, inbound items, replies, and events
-- [x] 2.2 Implement opaque HttpOnly session cookies and tenant-scoped route guards
+- [x] 2.2 Implement opaque HttpOnly session cookies and session-scoped route guards
 - [x] 2.3 Implement versioned AES-256-GCM credential envelopes with session-bound additional authenticated data
 - [x] 2.4 Implement logout and retention cleanup that delete only the owning session scope
 
@@ -34,13 +34,13 @@
 
 ## 6. Customer demo experience
 
-- [x] 6.1 Implement authenticated session snapshot and server-sent event routes
+- [x] 6.1 Implement session snapshot and server-sent event routes
 - [x] 6.2 Build the responsive QR/login, account, source-health, and interaction-timeline page
 - [x] 6.3 Add real-time reconnect, stop/resume, logout, expiry, and transparent private-interface notices
 
 ## 7. Verification and handoff
 
-- [x] 7.1 Add unit tests for encryption, session isolation, platform parsers, baselines, deduplication, model failures, and irreversible-send honesty
+- [x] 7.1 Add unit tests for encryption, session scoping, platform parsers, baselines, deduplication, model failures, and irreversible-send honesty
 - [x] 7.2 Add integration tests with fake WeChat and Ark servers covering concurrent visitors and an end-to-end new-message reply
 - [x] 7.3 Run the full test, typecheck, build, and OpenSpec strict-validation gates
 - [x] 7.4 Add environment example, local runbook, Docker packaging, security limitations, and live-account validation checklist
@@ -55,8 +55,17 @@
 - [ ] 8.5 Verify service health, browserless QR creation, exact Ark model access with synthetic text, restart persistence, and unchanged AIDCP/isales health
 - [ ] 8.6 Record the deployed commit and honest public/live-account validation boundaries
 
+## 9. Shared public demo follow-up
+
+- [x] 9.1 Implement and integration-test a global list of logged-in sessions, visitor-selected account switching, and fresh account creation without replacing existing accounts
+- [x] 9.2 Replace public model copy with `chat角色模型`, `chat-llm`, and `CHAT回复`, add a regression test that the concrete model ID is absent, and keep the exact server-side Ark model unchanged
+- [x] 9.3 Align the browserless comment post-list request with the observed `userpageType=0` and `stickyOrder=false` parameters and cover the request contract in a platform-client test
+- [x] 9.4 Add regression coverage for preserving SSE on compatible origins and using fixed five-second authoritative snapshot polling on `.trycloudflare.com`
+- [ ] 9.5 Deploy the committed build behind a public HTTPS Quick Tunnel with Secure cookies while retaining the loopback-only application listener
+- [ ] 9.6 Verify the public browser flow, global account switching, polling fallback, worker continuity after page closure, exact backend model access, and unchanged AIDCP/isales services
+
 <!--
-Validation 2026-07-30:
+Initial validation 2026-07-30:
 - npm run lint: pass
 - npm run typecheck: pass
 - npm test: 5 files, 29 tests passed
@@ -67,4 +76,9 @@ Validation 2026-07-30:
 - HTTP runtime smoke: health, isolated session creation, and two real QR refresh responses returned valid PNG data URLs
 - Docker image build: not run because the local Docker daemon was unavailable
 - Real post-scan WeChat DM/comment reads and sends: intentionally not performed; see docs/live-validation.md
+
+Shared-demo follow-up validation 2026-07-30:
+- npm test -- --run test/integration.test.ts test/platform-client.test.ts test/ui-copy.test.ts: 3 files, 26 tests passed
+- openspec validate build-multi-user-wechat-ai-demo --strict: pass
+- Commit SHA and public deployment evidence: pending parent integration and tasks 9.5-9.6
 -->

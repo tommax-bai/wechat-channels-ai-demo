@@ -262,10 +262,8 @@ export class PrivateWechatGateway implements WechatGateway {
         currentPage: state.postPage,
         pageSize: 20,
         lastBuff: state.postLastBuff,
-        userpageType: 3,
-        onlyUnread: false,
-        needAllCommentCount: true,
-        forMcn: false,
+        userpageType: 0,
+        stickyOrder: false,
       },
       context,
     );

@@ -17,6 +17,13 @@ const elements = {
   timeline: document.querySelector("#timeline"),
   timelineCount: document.querySelector("#timelineCount"),
   sessionExpiry: document.querySelector("#sessionExpiry"),
+  currentSessionTab: document.querySelector("#currentSessionTab"),
+  sessionSwitcherTab: document.querySelector("#sessionSwitcherTab"),
+  sharedSessionCount: document.querySelector("#sharedSessionCount"),
+  currentSessionView: document.querySelector("#currentSessionView"),
+  sessionSwitcher: document.querySelector("#sessionSwitcher"),
+  sessionList: document.querySelector("#sessionList"),
+  addSessionButton: document.querySelector("#addSessionButton"),
 };
 
 const authLabels = {
@@ -53,6 +60,7 @@ let eventSource = null;
 let autoStarted = false;
 let logoutArmed = false;
 let logoutTimer = null;
+let sharedSessions = { selectedSessionId: null, sessions: [] };
 
 async function api(path, options = {}) {
   const headers = { ...options.headers };
@@ -74,7 +82,18 @@ async function refresh() {
   if (refreshing) return;
   refreshing = true;
   try {
+    sharedSessions = await api("/api/sessions");
+    renderSharedSessions(sharedSessions);
+    if (sharedSessions.selectedSessionId === null && sharedSessions.sessions.length > 0) {
+      snapshot = null;
+      eventSource?.close();
+      eventSource = null;
+      elements.currentSessionTab.disabled = true;
+      showView("sessions");
+      return;
+    }
     snapshot = await api("/api/session");
+    elements.currentSessionTab.disabled = false;
     render(snapshot);
     connectEvents();
     if (snapshot.authState === "new" && !autoStarted) {
@@ -85,6 +104,44 @@ async function refresh() {
     renderFatal(error.message);
   } finally {
     refreshing = false;
+  }
+}
+
+async function selectSession(sessionId) {
+  eventSource?.close();
+  eventSource = null;
+  setSessionButtonsDisabled(true);
+  try {
+    snapshot = await api("/api/sessions/select", {
+      method: "POST",
+      body: JSON.stringify({ sessionId }),
+    });
+    autoStarted = true;
+    elements.currentSessionTab.disabled = false;
+    showView("current");
+    render(snapshot);
+    sharedSessions = await api("/api/sessions");
+    renderSharedSessions(sharedSessions);
+    connectEvents();
+  } finally {
+    setSessionButtonsDisabled(false);
+  }
+}
+
+async function addSession() {
+  eventSource?.close();
+  eventSource = null;
+  setBusy(elements.addSessionButton, true, "正在创建");
+  try {
+    snapshot = await api("/api/sessions/new", { method: "POST", body: "{}" });
+    autoStarted = true;
+    elements.currentSessionTab.disabled = false;
+    showView("current");
+    render(snapshot);
+    connectEvents();
+    await startLogin();
+  } finally {
+    setBusy(elements.addSessionButton, false, "添加视频号");
   }
 }
 
@@ -148,6 +205,7 @@ function disarmLogout() {
 
 function connectEvents() {
   if (eventSource || !snapshot) return;
+  if (window.location.hostname.endsWith(".trycloudflare.com")) return;
   eventSource = new EventSource("/api/events");
   const update = () => void refresh();
   for (const eventName of [
@@ -196,6 +254,65 @@ function render(data) {
   renderQr(data);
   renderSources(data.sources);
   renderTimeline(data.timeline);
+}
+
+function renderSharedSessions(data) {
+  elements.sharedSessionCount.textContent = String(data.sessions.length);
+  elements.sessionList.replaceChildren();
+  if (!data.sessions.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    const title = document.createElement("strong");
+    title.textContent = "还没有已登录视频号";
+    const copy = document.createElement("p");
+    copy.textContent = "点击“添加视频号”扫码登录。";
+    empty.append(title, copy);
+    elements.sessionList.append(empty);
+    return;
+  }
+  for (const session of data.sessions) {
+    const card = document.createElement("article");
+    card.className = "session-card";
+    const info = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = session.accountDisplayName;
+    const meta = document.createElement("small");
+    meta.textContent = `${authLabels[session.authState] || session.authState} · 到期 ${formatTime(session.expiresAt)}`;
+    info.append(name, meta);
+    const button = document.createElement("button");
+    const selected = session.sessionId === data.selectedSessionId;
+    button.className = `button ${selected ? "ghost" : "secondary"}`;
+    button.type = "button";
+    button.disabled = selected;
+    button.dataset.sessionId = session.sessionId;
+    button.textContent = selected ? "当前账号" : "切换";
+    button.addEventListener("click", () => void selectSession(session.sessionId));
+    card.append(info, button);
+    elements.sessionList.append(card);
+  }
+}
+
+function showView(view) {
+  if (view === "current" && !snapshot) return;
+  const sessions = view === "sessions";
+  elements.currentSessionView.hidden = sessions;
+  elements.sessionSwitcher.hidden = !sessions;
+  elements.currentSessionTab.classList.toggle("active", !sessions);
+  elements.currentSessionTab.setAttribute("aria-selected", String(!sessions));
+  elements.sessionSwitcherTab.classList.toggle("active", sessions);
+  elements.sessionSwitcherTab.setAttribute("aria-selected", String(sessions));
+  if (sessions) {
+    void api("/api/sessions").then((data) => {
+      sharedSessions = data;
+      renderSharedSessions(data);
+    });
+  }
+}
+
+function setSessionButtonsDisabled(disabled) {
+  for (const button of elements.sessionList.querySelectorAll("button")) {
+    button.disabled = disabled || button.textContent === "当前账号";
+  }
 }
 
 function renderQr(data) {
@@ -353,4 +470,8 @@ function renderFatal(code) {
 elements.loginButton.addEventListener("click", () => void startLogin());
 elements.automationButton.addEventListener("click", () => void toggleAutomation());
 elements.logoutButton.addEventListener("click", () => void logout());
+elements.currentSessionTab.addEventListener("click", () => showView("current"));
+elements.sessionSwitcherTab.addEventListener("click", () => showView("sessions"));
+elements.addSessionButton.addEventListener("click", () => void addSession());
+window.setInterval(() => void refresh(), 5_000);
 void refresh();

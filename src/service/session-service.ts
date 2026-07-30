@@ -10,6 +10,7 @@ import type {
   NormalizedInboundItem,
   ReplyModelResult,
   SessionSnapshot,
+  SharedSessionSummary,
 } from "../types.js";
 import type { WechatGateway } from "../wechat/client.js";
 import type { StoredCredential } from "./credentials.js";
@@ -37,6 +38,10 @@ export class SessionService {
       }
       if (existing) this.repository.deleteSession(id);
     }
+    return this.createBrowserSession(now);
+  }
+
+  createBrowserSession(now = Date.now()): BrowserSession {
     if (this.repository.countUnexpiredSessions(now) >= this.config.maxActiveSessions) {
       throw new SessionLimitError();
     }
@@ -56,6 +61,27 @@ export class SessionService {
     const row = this.repository.getSession(digestSessionToken(rawToken));
     if (!row || row.expiresAt <= now || row.authState === "logged_out") return null;
     return row;
+  }
+
+  resolveShared(sessionId: string | undefined, now = Date.now()): SessionRow | null {
+    if (!sessionId) return null;
+    const row = this.repository.getSession(sessionId);
+    if (!row || row.expiresAt <= now || row.authState === "logged_out") return null;
+    return row;
+  }
+
+  listSharedSessions(now = Date.now()): SharedSessionSummary[] {
+    return this.repository.listUnexpiredSessions(now).flatMap((session) => {
+      const credential = this.readCredential(session.id);
+      if (credential?.kind !== "session") return [];
+      return [{
+        sessionId: session.id,
+        accountDisplayName: credential.value.nickname,
+        authState: session.authState,
+        automationEnabled: session.automationEnabled,
+        expiresAt: session.expiresAt,
+      }];
+    });
   }
 
   async startLogin(session: SessionRow, now = Date.now()): Promise<void> {

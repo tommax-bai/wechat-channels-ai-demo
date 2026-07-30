@@ -22,6 +22,9 @@ export interface ServerDependencies {
 }
 
 const automationBody = z.object({ enabled: z.boolean() }).strict();
+const selectSessionBody = z.object({
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+}).strict();
 
 export async function buildServer(deps: ServerDependencies): Promise<FastifyInstance> {
   const app = Fastify({
@@ -75,10 +78,66 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     return deps.sessions.snapshot(session);
   });
 
+  app.get("/api/sessions", async (request, reply) => {
+    const sessions = deps.sessions.listSharedSessions();
+    const selectedCookieName = selectedSessionCookieName(deps.config);
+    const selectedId = request.cookies[selectedCookieName];
+    const explicitlySelected = deps.sessions.resolveShared(selectedId);
+    if (selectedId && !explicitlySelected) {
+      reply.clearCookie(selectedCookieName, cookieOptions(deps.config));
+    }
+    const browserOwned = deps.sessions.resolve(
+      request.cookies[deps.config.sessionCookieName],
+    );
+    const selected = explicitlySelected
+      ?? (!selectedId
+        && browserOwned
+        && sessions.some((session) => session.sessionId === browserOwned.id)
+        ? browserOwned
+        : null);
+    return {
+      selectedSessionId: selected?.id ?? null,
+      sessions,
+    };
+  });
+
+  app.post("/api/sessions/select", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    const body = selectSessionBody.parse(request.body);
+    const selected = deps.sessions.resolveShared(body.sessionId);
+    if (!selected) throw new Error("shared_session_unavailable");
+    reply.setCookie(
+      selectedSessionCookieName(deps.config),
+      selected.id,
+      cookieOptions(deps.config),
+    );
+    return deps.sessions.snapshot(selected);
+  });
+
+  app.post("/api/sessions/new", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    const browser = deps.sessions.createBrowserSession();
+    reply.setCookie(
+      deps.config.sessionCookieName,
+      browser.token,
+      cookieOptions(deps.config),
+    );
+    reply.clearCookie(
+      selectedSessionCookieName(deps.config),
+      cookieOptions(deps.config),
+    );
+    return deps.sessions.snapshot(browser.row);
+  });
+
   app.post("/api/session/login", async (request, reply) => {
     assertSameOrigin(request, deps.config);
     const session = requireSession(request, reply, deps);
     await deps.sessions.startLogin(session);
+    reply.setCookie(
+      selectedSessionCookieName(deps.config),
+      session.id,
+      cookieOptions(deps.config),
+    );
     return deps.sessions.snapshot(deps.repository.getSession(session.id) ?? session);
   });
 
@@ -95,6 +154,7 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     const session = requireSession(request, reply, deps);
     deps.sessions.logout(session);
     reply.clearCookie(deps.config.sessionCookieName, cookieOptions(deps.config));
+    reply.clearCookie(selectedSessionCookieName(deps.config), cookieOptions(deps.config));
     return reply.code(204).send();
   });
 
@@ -168,6 +228,8 @@ function ensureSession(
   reply: FastifyReply,
   deps: ServerDependencies,
 ): SessionRow {
+  const selected = resolveRequestSession(request, reply, deps);
+  if (selected) return selected;
   const browser = deps.sessions.ensureBrowserSession(
     request.cookies[deps.config.sessionCookieName],
   );
@@ -186,12 +248,33 @@ function requireSession(
   reply: FastifyReply,
   deps: ServerDependencies,
 ): SessionRow {
-  const session = deps.sessions.resolve(request.cookies[deps.config.sessionCookieName]);
+  const session = resolveRequestSession(request, reply, deps, false);
   if (!session) {
     reply.code(401);
     throw new Error("demo_session_required");
   }
   return session;
+}
+
+function resolveRequestSession(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: ServerDependencies,
+  allowOwnerFallbackAfterInvalidSelection = true,
+): SessionRow | null {
+  const selectedCookieName = selectedSessionCookieName(deps.config);
+  const selectedId = request.cookies[selectedCookieName];
+  if (selectedId) {
+    const selected = deps.sessions.resolveShared(selectedId);
+    if (selected) return selected;
+    reply.clearCookie(selectedCookieName, cookieOptions(deps.config));
+    if (!allowOwnerFallbackAfterInvalidSelection) return null;
+  }
+  return deps.sessions.resolve(request.cookies[deps.config.sessionCookieName]);
+}
+
+function selectedSessionCookieName(config: AppConfig): string {
+  return `${config.sessionCookieName}_selected`;
 }
 
 function cookieOptions(config: AppConfig): {
@@ -234,6 +317,7 @@ function statusFor(code: string): number {
   if (code === "cross_origin_mutation_rejected") return 403;
   if (code === "platform_send_in_flight") return 409;
   if (code === "active_session_limit_reached") return 503;
+  if (code === "shared_session_unavailable") return 404;
   if (code === "invalid_request") return 400;
   return 502;
 }
