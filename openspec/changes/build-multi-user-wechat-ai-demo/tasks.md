@@ -50,10 +50,10 @@
 
 - [x] 8.1 Verify the named DEV target, existing service health, port availability, and HTTPS boundary without changing AIDCP or isales
 - [x] 8.2 Add and commit the isolated systemd unit, environment template, runtime layout, validation, and rollback documentation
-- [ ] 8.3 Install a checksum-verified private Node.js 22 runtime and deploy the committed source with production dependencies
-- [ ] 8.4 Store fresh deployment secrets with restricted permissions and start only `wechat-channels-ai-demo.service`
-- [ ] 8.5 Verify service health, browserless QR creation, exact Ark model access with synthetic text, restart persistence, and unchanged AIDCP/isales health
-- [ ] 8.6 Record the deployed commit and honest public/live-account validation boundaries
+- [x] 8.3 Install a checksum-verified private Node.js 22 runtime and deploy the committed source with production dependencies
+- [x] 8.4 Store fresh deployment secrets with restricted permissions and start only `wechat-channels-ai-demo.service`
+- [x] 8.5 Verify service health, browserless QR creation, exact Ark model access with synthetic text, restart persistence, and unchanged AIDCP/isales health
+- [x] 8.6 Record the deployed commit and honest public/live-account validation boundaries
 
 ## 9. Shared public demo follow-up
 
@@ -61,7 +61,7 @@
 - [x] 9.2 Replace public model copy with `chat角色模型`, `chat-llm`, and `CHAT回复`, add a regression test that the concrete model ID is absent, and keep the exact server-side Ark model unchanged
 - [x] 9.3 Align the browserless comment post-list request with the observed `userpageType=0` and `stickyOrder=false` parameters and cover the request contract in a platform-client test
 - [x] 9.4 Add regression coverage for preserving SSE on compatible origins and using fixed five-second authoritative snapshot polling on `.trycloudflare.com`
-- [ ] 9.5 Deploy the committed build behind a public HTTPS Quick Tunnel with Secure cookies while retaining the loopback-only application listener
+- [x] 9.5 Deploy the committed build behind a public HTTPS Quick Tunnel with Secure cookies while retaining the loopback-only application listener
 - [ ] 9.6 Verify the public browser flow, global account switching, polling fallback, worker continuity after page closure, exact backend model access, and unchanged AIDCP/isales services
 
 <!--
@@ -78,7 +78,19 @@ Initial validation 2026-07-30:
 - Real post-scan WeChat DM/comment reads and sends: intentionally not performed; see docs/live-validation.md
 
 Shared-demo follow-up validation 2026-07-30:
-- npm test -- --run test/integration.test.ts test/platform-client.test.ts test/ui-copy.test.ts: 3 files, 26 tests passed
+- npm test: 6 files, 35 tests passed
+- npm run lint, npm run typecheck, npm run build: pass
+- npm audit and npm audit --omit=dev: 0 vulnerabilities
 - openspec validate build-multi-user-wechat-ai-demo --strict: pass
-- Commit SHA and public deployment evidence: pending parent integration and tasks 9.5-9.6
+- Deployed commit: 46999b0f9fb9bf8b32d3bc0322f84882109cce37
+- DEV current -> releases/46999b0; application and Quick Tunnel services active with NRestarts=0
+- Public URL: https://scheduling-equivalent-amongst-done.trycloudflare.com
+- Public health, readiness, same-origin session selection, and Secure/HttpOnly/SameSite=Lax cookie projection: pass from DEV
+- In-app browser over the local tunnel: chat角色模型, chat-llm, CHAT回复, one shared account, switching tab, healthy sources, and no console errors verified
+- Exact Ark synthetic smoke: non-empty output, exact configured model identity, and provider request ID verified without exposing the key or generated text
+- With all Demo pages closed, both source last-success timestamps advanced through another worker cycle
+- Live direct messages continued to reach confirmed platform outcomes after deployment
+- Comment baseline is healthy but still returned zero items for an account known to have comments; the current browserless legacy transport therefore has no honest live comment-send target
+- AIDCP Cloud and all four isales services remained active and were not restarted
+- The operator Mac's Clash Fake-IP route closes trycloudflare TLS, so a public-origin browser pass on that machine remains pending even though the public HTTPS path passes from DEV; keep 9.6 open
 -->
