@@ -147,3 +147,7 @@ openspec validate build-multi-user-wechat-ai-demo --strict
 ```
 
 Automated tests use fake WeChat and Ark servers. They never scan a real account or submit a platform write. See [Live validation checklist](docs/live-validation.md) for the remaining real-account gates.
+
+The current DEV host has no suitable HTTPS hostname, so its deployment remains
+loopback-only and is accessed through an SSH tunnel. See
+[DEV deployment](docs/dev-deployment.md).

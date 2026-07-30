@@ -1,0 +1,29 @@
+[Unit]
+Description=Standalone WeChat Channels AI Demo
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wechat-demo
+Group=wechat-demo
+WorkingDirectory=/opt/wechat-channels-ai-demo/current
+EnvironmentFile=/opt/wechat-channels-ai-demo/shared/demo.env
+ExecStart=/opt/wechat-channels-ai-demo/runtime/node/bin/node dist/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/wechat-channels-ai-demo/data
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -46,6 +46,15 @@
 - [x] 7.4 Add environment example, local runbook, Docker packaging, security limitations, and live-account validation checklist
 - [x] 7.5 Commit the completed standalone repository and record validation evidence in this task file
 
+## 8. DEV deployment
+
+- [x] 8.1 Verify the named DEV target, existing service health, port availability, and HTTPS boundary without changing AIDCP or isales
+- [x] 8.2 Add and commit the isolated systemd unit, environment template, runtime layout, validation, and rollback documentation
+- [ ] 8.3 Install a checksum-verified private Node.js 22 runtime and deploy the committed source with production dependencies
+- [ ] 8.4 Store fresh deployment secrets with restricted permissions and start only `wechat-channels-ai-demo.service`
+- [ ] 8.5 Verify service health, browserless QR creation, exact Ark model access with synthetic text, restart persistence, and unchanged AIDCP/isales health
+- [ ] 8.6 Record the deployed commit and honest public/live-account validation boundaries
+
 <!--
 Validation 2026-07-30:
 - npm run lint: pass

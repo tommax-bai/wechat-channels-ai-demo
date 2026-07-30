@@ -104,6 +104,12 @@ Polling the page API would work but adds latency and repeated reads. WebSockets 
 5. Deploy one HTTPS instance with a fresh encryption key and model credentials; do not copy local SQLite or session material.
 6. Roll back by stopping the service and deleting its isolated deployment volume; no AIDCP service or data is involved.
 
+For the initial DEV deployment, the service uses an isolated verified Node.js 22
+runtime, a dedicated unprivileged system user, a root-owned environment file,
+and a loopback-only listener. Public access remains blocked until the operator
+assigns an HTTPS hostname; DEV's existing public HTTP listeners are not an
+acceptable credential transport.
+
 ## Open Questions
 
 None for the initial implementation. Exact live private-response shapes and exact model-account activation remain validation gates rather than design choices.
