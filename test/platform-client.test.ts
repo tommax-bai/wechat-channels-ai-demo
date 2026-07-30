@@ -512,6 +512,49 @@ describe("PrivateWechatGateway parsers", () => {
       item.externalId === "object-slim:comment-slim-reply")).toBe(false);
   });
 
+  it("keeps a replyable comment when the platform omits its username", async () => {
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.includes("/post/post_list")) {
+          return response({
+            errCode: 0,
+            data: {
+              list: [{ objectId: "object-opaque", exportId: "export-opaque" }],
+              continueFlag: 0,
+            },
+          });
+        }
+        if (url.includes("/comment/comment_list")) {
+          return response({
+            errCode: 0,
+            data: {
+              comment: [commentRecord({
+                commentId: "comment-opaque",
+                username: "",
+              })],
+              downContinueFlag: 0,
+            },
+          });
+        }
+        throw new Error(`unexpected ${url}`);
+      },
+    }));
+
+    const page = await gateway.syncComments(fakePlatformSession(), null);
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]?.authorId).toMatch(/^comment_opaque_[a-f0-9]{64}$/);
+    expect(page.items[0]?.target).toMatchObject({
+      kind: "comment",
+      parentCommentId: "comment-opaque",
+      commentContext: { username: "" },
+    });
+  });
+
   it.each([
     ["numeric commentId", { commentId: 123 }],
     ["string commentLikeCount", { commentLikeCount: "0" }],

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SerializedCookieJar } from "tough-cookie";
 import type {
   NormalizedInboundItem,
@@ -813,7 +814,7 @@ function normalizeCommentTree(
   ));
   const commentContext = sanitizeCommentContext(comment, commentId);
   const username = optionalString(comment, ["username", "finderUsername"])?.trim();
-  if (!commentContext || !username || username === ownUsername) return descendants;
+  if (!commentContext || (username && username === ownUsername)) return descendants;
 
   const text = requiredString(
     comment,
@@ -824,7 +825,7 @@ function normalizeCommentTree(
   return [{
     source: "comment",
     externalId: `${objectId}:${commentId}`,
-    authorId: username,
+    authorId: username || opaqueCommentAuthorId(commentId),
     authorName: optionalString(comment, ["commentNickname", "nickname"]) ?? "视频号用户",
     text,
     occurredAt: epochMs(comment.commentCreatetime ?? comment.createTime),
@@ -837,6 +838,12 @@ function normalizeCommentTree(
     },
     rawShapeVersion: 1,
   }, ...descendants];
+}
+
+function opaqueCommentAuthorId(commentId: string): string {
+  return `comment_opaque_${createHash("sha256")
+    .update(`comment|${commentId}`, "utf8")
+    .digest("hex")}`;
 }
 
 function sanitizeCommentContext(
