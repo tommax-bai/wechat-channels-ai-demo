@@ -178,6 +178,25 @@ describe("first-party WeChat request context capture", () => {
     expect(page.listenerCount()).toBe(0);
   });
 
+  it("gives the first page a grace window before one reload", async () => {
+    const page = new FakeRequestPage();
+    const reload = vi.spyOn(page, "reload").mockImplementation(() => {
+      page.emitRequest(requestFromCapture(validCapture()));
+      return Promise.resolve(null);
+    });
+    const pending = waitForAuthDataRequest(
+      page as unknown as Page,
+      "https://channels.weixin.qq.com/platform/post/list",
+      "finder-self",
+      300,
+    );
+
+    await Promise.resolve();
+    expect(reload).not.toHaveBeenCalled();
+    await expect(pending).resolves.toEqual(validCapture());
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
   it("bounds browser cleanup and prioritizes its failure over the capture error", async () => {
     const browser = {
       newContext: async () => {

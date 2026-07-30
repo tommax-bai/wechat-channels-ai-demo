@@ -21,6 +21,7 @@ const MAX_POST_DATA_BYTES = 32 * 1_024;
 const MAX_REQUEST_URL_BYTES = 8 * 1_024;
 const MAX_BROWSER_CLEANUP_MS = 5_000;
 const MAX_COOKIE_EXPIRES_SECONDS = 253_402_300_799;
+const MAX_INITIAL_CAPTURE_GRACE_MS = 8_000;
 const CREATOR_POST_PATH = "/platform/post/list";
 const AUTH_DATA_SUFFIX = "/auth/auth_data";
 type BrowserCookieParam = Parameters<BrowserContext["addCookies"]>[0][number];
@@ -303,6 +304,7 @@ export async function waitForAuthDataRequest(
 ): Promise<CapturedAuthRequest> {
   let settled = false;
   let timer: NodeJS.Timeout | undefined;
+  let reloadTimer: NodeJS.Timeout | undefined;
   let requestHandler: ((request: Request) => void) | undefined;
   const captured = new Promise<CapturedAuthRequest>((resolve, reject) => {
     const finish = (
@@ -311,6 +313,7 @@ export async function waitForAuthDataRequest(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (reloadTimer) clearTimeout(reloadTimer);
       if (requestHandler) page.off("request", requestHandler);
       callback();
     };
@@ -358,13 +361,15 @@ export async function waitForAuthDataRequest(
   void page.goto(startUrl, {
     waitUntil: "domcontentloaded",
     timeout: timeoutMs,
-  }).then(async () => {
-    if (!settled) {
-      await page.reload({
+  }).then(() => {
+    if (settled) return;
+    reloadTimer = setTimeout(() => {
+      if (settled) return;
+      void page.reload({
         waitUntil: "domcontentloaded",
         timeout: timeoutMs,
       }).catch(() => undefined);
-    }
+    }, initialCaptureGraceMs(timeoutMs));
   }).catch(() => undefined);
   return captured;
 }
@@ -484,6 +489,13 @@ function browserCookieExpires(expiryMs: number | undefined): number {
   const expirySeconds = Math.floor(expiryMs / 1_000);
   if (expirySeconds <= 0) return -1;
   return Math.min(expirySeconds, MAX_COOKIE_EXPIRES_SECONDS);
+}
+
+function initialCaptureGraceMs(timeoutMs: number): number {
+  return Math.min(
+    MAX_INITIAL_CAPTURE_GRACE_MS,
+    Math.max(100, Math.floor(timeoutMs / 3)),
+  );
 }
 
 function isWechatCookieDomain(raw: string): boolean {
