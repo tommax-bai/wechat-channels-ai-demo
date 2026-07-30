@@ -20,6 +20,7 @@ const MAX_COMMON_VALUE_BYTES = 16 * 1_024;
 const MAX_POST_DATA_BYTES = 32 * 1_024;
 const MAX_REQUEST_URL_BYTES = 8 * 1_024;
 const MAX_BROWSER_CLEANUP_MS = 5_000;
+const MAX_COOKIE_EXPIRES_SECONDS = 253_402_300_799;
 const CREATOR_POST_PATH = "/platform/post/list";
 const AUTH_DATA_SUFFIX = "/auth/auth_data";
 type BrowserCookieParam = Parameters<BrowserContext["addCookies"]>[0][number];
@@ -390,9 +391,7 @@ export async function cookiesForBrowser(
         ...(cookie.sameSite
           ? { sameSite: playwrightSameSite(cookie.sameSite) }
           : {}),
-        expires: typeof expiryMs === "number" && Number.isFinite(expiryMs)
-          ? Math.floor(expiryMs / 1_000)
-          : -1,
+        expires: browserCookieExpires(expiryMs),
       };
     });
   if (mapped.length === 0) {
@@ -478,6 +477,13 @@ function playwrightSameSite(
   if (value === "strict") return "Strict";
   if (value === "none") return "None";
   return "Lax";
+}
+
+function browserCookieExpires(expiryMs: number | undefined): number {
+  if (typeof expiryMs !== "number" || !Number.isFinite(expiryMs)) return -1;
+  const expirySeconds = Math.floor(expiryMs / 1_000);
+  if (expirySeconds <= 0) return -1;
+  return Math.min(expirySeconds, MAX_COOKIE_EXPIRES_SECONDS);
 }
 
 function isWechatCookieDomain(raw: string): boolean {

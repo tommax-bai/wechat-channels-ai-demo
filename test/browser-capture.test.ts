@@ -108,6 +108,28 @@ describe("first-party WeChat request context capture", () => {
     ]));
   });
 
+  it("clamps long-lived cookies to the browser-supported expiry limit", async () => {
+    const jar = new CookieJar();
+    await jar.setCookie(
+      "long_lived=1; Path=/; Secure; Max-Age=253402300799",
+      "https://channels.weixin.qq.com/",
+    );
+    const serialized = jar.serializeSync();
+    if (!serialized) throw new Error("missing serialized jar");
+
+    const cookies = await cookiesForBrowser(
+      serialized,
+      "https://channels.weixin.qq.com",
+    );
+
+    expect(cookies).toEqual([
+      expect.objectContaining({
+        name: "long_lived",
+        expires: 253_402_300_799,
+      }),
+    ]);
+  });
+
   it("rebuilds the encrypted jar from the authoritative browser snapshot", async () => {
     const serialized = await rebuildCookieJarFromBrowserSnapshot([
       browserCookie({
