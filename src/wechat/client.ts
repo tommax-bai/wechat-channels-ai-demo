@@ -208,12 +208,7 @@ export class PrivateWechatGateway implements WechatGateway {
         rawShapeVersion: 1,
       }];
     });
-    const hasMore = requiredFlag(
-      result.data,
-      ["isContinue", "hasMore"],
-      endpoint,
-      "data.isContinue",
-    );
+    const hasMore = directMessagePageHasMore(result.data, state.phase, endpoint);
     let nextCursor: string;
     if (state.phase === "history" && hasMore) {
       nextCursor = encodeDmCursor({
@@ -544,6 +539,33 @@ function requiredFlag(
     if (value === false || value === 0 || value === "0") return false;
   }
   throw new WechatApiError(`schema_changed:${field}`, endpoint, false);
+}
+
+function directMessagePageHasMore(
+  data: Record<string, unknown>,
+  phase: DmCursorV1["phase"],
+  endpoint: "dmHistory" | "dmNewMessages",
+): boolean {
+  let parsed: boolean | null = null;
+  let present = false;
+  for (const key of ["isContinue", "hasMore"]) {
+    if (!Object.hasOwn(data, key)) continue;
+    present = true;
+    const value = data[key];
+    const current =
+      value === true || value === 1 || value === "1"
+        ? true
+        : value === false || value === 0 || value === "0"
+          ? false
+          : null;
+    if (current === null || (parsed !== null && parsed !== current)) {
+      throw new WechatApiError("schema_changed:data.isContinue", endpoint, false);
+    }
+    parsed = current;
+  }
+  if (present && parsed !== null) return parsed;
+  if (!present && phase === "incremental") return false;
+  throw new WechatApiError("schema_changed:data.isContinue", endpoint, false);
 }
 
 function pageHasMore(

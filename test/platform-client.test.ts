@@ -440,7 +440,7 @@ describe("PrivateWechatGateway parsers", () => {
     });
   });
 
-  it("drains DM history before switching to the incremental cursor", async () => {
+  it("drains DM history and accepts an incremental page without a pagination flag", async () => {
     const calls: Array<{ path: string; cookie: string | null }> = [];
     let historyPage = 0;
     const gateway = new PrivateWechatGateway(new WechatTransport({
@@ -473,9 +473,28 @@ describe("PrivateWechatGateway parsers", () => {
             errCode: 0,
             data: {
               baseResp: { errcode: 0 },
-              msg: [],
+              msg: [{
+                msgType: 1,
+                fromUsername: "peer-1",
+                toUsername: "finder-self",
+                textMsg: { content: "一条新的测试私信" },
+                svrMsgId: "new-message-1",
+                sessionId: "conversation-1",
+                createTime: "1710000000",
+              }],
               cookie: "incremental-2",
-              isContinue: 0,
+            },
+          });
+        }
+        if (url.pathname.endsWith("/get-session-info")) {
+          return response({
+            errCode: 0,
+            data: {
+              sessionInfo: [{
+                sessionId: "conversation-1",
+                username: "peer-1",
+                nickname: "访客",
+              }],
             },
           });
         }
@@ -496,10 +515,87 @@ describe("PrivateWechatGateway parsers", () => {
       "/cgi-bin/mmfinderassistant-bin/private-msg/get-history-msg",
       "/cgi-bin/mmfinderassistant-bin/private-msg/get-login-cookie",
       "/cgi-bin/mmfinderassistant-bin/private-msg/get-new-msg",
+      "/cgi-bin/mmfinderassistant-bin/private-msg/get-session-info",
     ]);
     expect(calls[1]?.cookie).toBe("history-2");
     expect(calls[3]?.cookie).toBe("incremental-1");
+    expect(third.items).toEqual([expect.objectContaining({
+      source: "dm",
+      externalId: "new-message-1",
+      authorId: "peer-1",
+      authorName: "访客",
+      text: "一条新的测试私信",
+      target: {
+        kind: "dm",
+        sessionId: "conversation-1",
+        fromUsername: "finder-self",
+        toUsername: "peer-1",
+      },
+    })]);
     expect(session.dmCursor).toBe("incremental-2");
+  });
+
+  it("keeps the DM history pagination flag required", async () => {
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async () => response({
+        errCode: 0,
+        data: { msg: [], cookie: "history-cursor" },
+      }),
+    }));
+
+    await expect(gateway.syncDirectMessages(fakePlatformSession(), null))
+      .rejects.toMatchObject({
+        code: "schema_changed:data.isContinue",
+        endpoint: "dmHistory",
+        ambiguous: false,
+      });
+  });
+
+  it("rejects a malformed explicit incremental pagination flag", async () => {
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async (input) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith("/get-history-msg")) {
+          return response({
+            errCode: 0,
+            data: { msg: [], cookie: "history-end", isContinue: 0 },
+          });
+        }
+        if (path.endsWith("/get-login-cookie")) {
+          return response({
+            errCode: 0,
+            data: { baseResp: { errcode: 0 }, cookie: "incremental-1" },
+          });
+        }
+        if (path.endsWith("/get-new-msg")) {
+          return response({
+            errCode: 0,
+            data: {
+              baseResp: { errcode: 0 },
+              msg: [],
+              cookie: "incremental-2",
+              isContinue: 2,
+            },
+          });
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+    }));
+    const session = fakePlatformSession();
+    const baseline = await gateway.syncDirectMessages(session, null);
+
+    await expect(gateway.syncDirectMessages(session, baseline.cursor))
+      .rejects.toMatchObject({
+        code: "schema_changed:data.isContinue",
+        endpoint: "dmNewMessages",
+        ambiguous: false,
+      });
   });
 });
 
