@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CookieJar } from "tough-cookie";
 import { PrivateWechatGateway } from "../src/wechat/client.js";
+import type { WechatSessionCapturer } from "../src/wechat/browser-capture.js";
 import { WechatTransport } from "../src/wechat/transport.js";
 import { fakePlatformSession } from "./helpers.js";
 
@@ -29,8 +30,73 @@ describe("PrivateWechatGateway parsers", () => {
     expect(calls[1]).toContain("token=qr-token");
   });
 
+  it("captures and revalidates first-party context before confirming login", async () => {
+    const calls: Array<{ url: URL; headers: Headers }> = [];
+    const transport = new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async (input, init) => {
+        const url = new URL(String(input));
+        calls.push({ url, headers: new Headers(init?.headers) });
+        if (url.pathname.endsWith("/auth_login_code")) {
+          return response({ errCode: 0, data: { token: "qr-token" } });
+        }
+        if (url.pathname.endsWith("/auth_login_status")) {
+          return response({ errCode: 0, data: { status: 1, acctStatus: 1 } });
+        }
+        if (url.pathname.endsWith("/auth_data")) {
+          return response({
+            errCode: 0,
+            data: {
+              finderUser: {
+                finderUsername: "finder-self",
+                nickname: "测试视频号",
+              },
+            },
+          });
+        }
+        if (url.pathname.endsWith("/helper_upload_params")) {
+          return response({ errCode: 0, data: { uin: "10001" } });
+        }
+        throw new Error(`unexpected ${url.pathname}`);
+      },
+    });
+    const capturedContext = fakePlatformSession().requestContext;
+    if (!capturedContext) throw new Error("missing fake captured context");
+    const capturer: WechatSessionCapturer = {
+      capture: async (session) => ({
+        ...session,
+        transportProfile: "micro_v1",
+        requestContext: capturedContext,
+      }),
+    };
+    const gateway = new PrivateWechatGateway(transport, capturer);
+
+    const pending = await gateway.createLogin(120_000);
+    const polled = await gateway.pollLogin(pending);
+    expect(polled.state).toBe("capture_required");
+    if (polled.state !== "capture_required") {
+      throw new Error("login was not ready for capture");
+    }
+    const session = await gateway.completeLoginCapture(polled.session);
+
+    expect(session.transportProfile).toBe("micro_v1");
+    expect(session.finderUsername).toBe("finder-self");
+    const authCalls = calls.filter((call) => call.url.pathname.endsWith("/auth_data"));
+    expect(authCalls).toHaveLength(2);
+    expect([...authCalls[0]!.url.searchParams.keys()]).toEqual([]);
+    expect([...authCalls[1]!.url.searchParams.keys()].sort()).toEqual([
+      "_aid",
+      "_pageUrl",
+      "_rid",
+    ]);
+    expect(authCalls[1]!.headers.get("finger-print-device-id"))
+      .toBe("fingerprint-test");
+  });
+
   it("keeps objectId distinct from exportId and uses exportId as comment reply target", async () => {
-    const postBodies: URLSearchParams[] = [];
+    const postBodies: Array<Record<string, unknown>> = [];
     const transport = new WechatTransport({
       baseUrl: "https://channels.weixin.qq.com",
       timeoutMs: 1_000,
@@ -38,7 +104,7 @@ describe("PrivateWechatGateway parsers", () => {
       fetchImpl: async (input, init) => {
         const url = String(input);
         if (url.includes("/post/post_list")) {
-          postBodies.push(new URLSearchParams(String(init?.body)));
+          postBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
           return response({
             errCode: 0,
             data: {
@@ -91,9 +157,86 @@ describe("PrivateWechatGateway parsers", () => {
     expect(nextPage.hasMore).toBe(false);
     expect(nextPage.items[0]?.externalId).toBe("object-2:comment-1");
     expect(nextPage.items[0]?.target).toMatchObject({ postId: "export-10" });
-    expect(postBodies[0]?.get("userpageType")).toBe("0");
-    expect(postBodies[0]?.get("stickyOrder")).toBe("false");
-    expect(postBodies[0]?.has("onlyUnread")).toBe(false);
+    expect(postBodies[0]?.userpageType).toBe(0);
+    expect(postBodies[0]?.stickyOrder).toBe(false);
+    expect(postBodies[0]).not.toHaveProperty("onlyUnread");
+    expect(postBodies.every((body) => !Object.hasOwn(body, "lastBuff"))).toBe(true);
+  });
+
+  it("pages posts by currentPage without depending on a post continuation buffer", async () => {
+    const postBodies: Array<Record<string, unknown>> = [];
+    const commentExportIds: string[] = [];
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.includes("/post/post_list")) {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          postBodies.push(body);
+          if (body.currentPage === 1) {
+            return response({
+              errCode: 0,
+              data: {
+                list: [{ objectId: "object-page-1", exportId: "export-page-1" }],
+                continueFlag: 1,
+                lastBuff: "response-buffer-must-not-be-forwarded",
+              },
+            });
+          }
+          if (body.currentPage === 2) {
+            return response({
+              errCode: 0,
+              data: {
+                list: [{ objectId: "object-page-2", exportId: "export-page-2" }],
+                continueFlag: 0,
+              },
+            });
+          }
+        }
+        if (url.includes("/comment/comment_list")) {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          if (typeof body.exportId !== "string") throw new Error("missing exportId");
+          commentExportIds.push(body.exportId);
+          return response({
+            errCode: 0,
+            data: { comment: [], downContinueFlag: 0 },
+          });
+        }
+        throw new Error(`unexpected ${url}`);
+      },
+    }));
+    const session = fakePlatformSession();
+
+    const first = await gateway.syncComments(session, null);
+    const second = await gateway.syncComments(session, first.cursor);
+
+    expect(first.hasMore).toBe(true);
+    expect(second.hasMore).toBe(false);
+    expect(commentExportIds).toEqual(["export-page-1", "export-page-2"]);
+    expect(postBodies.map((body) => ({
+      currentPage: body.currentPage,
+      pageSize: body.pageSize,
+      userpageType: body.userpageType,
+      stickyOrder: body.stickyOrder,
+      hasLastBuff: Object.hasOwn(body, "lastBuff"),
+    }))).toEqual([
+      {
+        currentPage: 1,
+        pageSize: 20,
+        userpageType: 0,
+        stickyOrder: false,
+        hasLastBuff: false,
+      },
+      {
+        currentPage: 2,
+        pageSize: 20,
+        userpageType: 0,
+        stickyOrder: false,
+        hasLastBuff: false,
+      },
+    ]);
   });
 
   it("keeps a paginated comment bound to the same post when the post list reorders", async () => {
@@ -120,10 +263,10 @@ describe("PrivateWechatGateway parsers", () => {
           });
         }
         if (url.includes("/comment/comment_list")) {
-          const form = new URLSearchParams(String(init?.body));
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
           const request = {
-            exportId: form.get("exportId"),
-            lastBuff: form.get("lastBuff"),
+            exportId: typeof body.exportId === "string" ? body.exportId : null,
+            lastBuff: typeof body.lastBuff === "string" ? body.lastBuff : null,
           };
           commentRequests.push(request);
           if (request.exportId === "export-a" && request.lastBuff === "") {
@@ -272,6 +415,7 @@ describe("PrivateWechatGateway parsers", () => {
                     commentId: "comment-grandchild",
                     commentNickname: "孙用户",
                     commentContent: "孙评论",
+                    levelTwoComment: undefined,
                   })],
                 })],
               })],
@@ -319,27 +463,62 @@ describe("PrivateWechatGateway parsers", () => {
     }
   });
 
-  it.each([
-    ["numeric commentId", { commentId: 123 }, "schema_changed:comment.commentId"],
-    [
-      "numeric own root commentId",
-      {
-        commentId: 123,
-        username: "finder-self",
-        levelTwoComment: [commentRecord({ commentId: "child-valid" })],
+  it("skips a slim nested comment without failing the usable root comment", async () => {
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.includes("/post/post_list")) {
+          return response({
+            errCode: 0,
+            data: {
+              list: [{ objectId: "object-slim", exportId: "export-slim" }],
+              continueFlag: 0,
+            },
+          });
+        }
+        if (url.includes("/comment/comment_list")) {
+          return response({
+            errCode: 0,
+            data: {
+              comment: [commentRecord({
+                commentId: "comment-root",
+                levelTwoComment: [{
+                  commentId: "comment-slim-reply",
+                  username: "peer-slim",
+                  commentNickname: "Peer",
+                  commentHeadurl: "",
+                  commentContent: "reply text",
+                  commentCreatetime: "1700000001",
+                  commentLikeCount: 0,
+                }],
+              })],
+              downContinueFlag: 0,
+            },
+          });
+        }
+        throw new Error(`unexpected ${url}`);
       },
-      "schema_changed:comment.commentId",
-    ],
-    [
-      "string commentLikeCount",
-      { commentLikeCount: "0" },
-      "schema_changed:comment.commentLikeCount",
-    ],
-    ["numeric readFlag", { readFlag: 0 }, "schema_changed:comment.readFlag"],
-  ])("fails closed for an inexact comment write context: %s", async (
+    }));
+
+    const page = await gateway.syncComments(fakePlatformSession(), null);
+
+    expect(page.items.map((item) => item.externalId)).toEqual([
+      "object-slim:comment-root",
+    ]);
+    expect(page.items.some((item) =>
+      item.externalId === "object-slim:comment-slim-reply")).toBe(false);
+  });
+
+  it.each([
+    ["numeric commentId", { commentId: 123 }],
+    ["string commentLikeCount", { commentLikeCount: "0" }],
+    ["numeric readFlag", { readFlag: 0 }],
+  ])("omits an inexact comment write context without creating a reply target: %s", async (
     _caseName,
     overrides,
-    expectedCode,
   ) => {
     const gateway = new PrivateWechatGateway(new WechatTransport({
       baseUrl: "https://channels.weixin.qq.com",
@@ -369,11 +548,8 @@ describe("PrivateWechatGateway parsers", () => {
       },
     }));
 
-    await expect(gateway.syncComments(fakePlatformSession(), null)).rejects.toMatchObject({
-      code: expectedCode,
-      endpoint: "commentList",
-      ambiguous: false,
-    });
+    const page = await gateway.syncComments(fakePlatformSession(), null);
+    expect(page.items).toEqual([]);
   });
 
   it("bounds the full irreversible response and reports a timeout as ambiguous", async () => {
@@ -442,6 +618,110 @@ describe("PrivateWechatGateway parsers", () => {
     )).rejects.toMatchObject({
       code: "platform_ack_missing",
       ambiguous: true,
+    });
+  });
+
+  it("uses capture-backed micro request context for comment reads and writes", async () => {
+    const calls: Array<{
+      url: URL;
+      headers: Headers;
+      body: Record<string, unknown>;
+    }> = [];
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async (input, init) => {
+        const call = {
+          url: new URL(String(input)),
+          headers: new Headers(init?.headers),
+          body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+        };
+        calls.push(call);
+        if (call.url.pathname.endsWith("/post/post_list")) {
+          return response({
+            errCode: 0,
+            data: { list: [], continueFlag: 0 },
+          });
+        }
+        return response({
+          errCode: 0,
+          data: {
+            baseResp: { errcode: 0 },
+            comment: { commentId: "comment-server-1" },
+          },
+        });
+      },
+    }));
+    const session = fakePlatformSession();
+
+    await gateway.syncComments(session, null);
+    await gateway.sendReply(
+      session,
+      {
+        kind: "comment",
+        postId: "export-1",
+        rootCommentId: "comment-root-1",
+        parentCommentId: "comment-parent-1",
+        commentContext: commentRecord({ commentId: "comment-parent-1" }),
+      },
+      "测试回复",
+      "client-1",
+    );
+
+    expect(calls.map((call) => call.url.pathname)).toEqual([
+      "/micro/content/cgi-bin/mmfinderassistant-bin/post/post_list",
+      "/micro/interaction/cgi-bin/mmfinderassistant-bin/comment/create_comment",
+    ]);
+    for (const call of calls) {
+      expect([...call.url.searchParams.keys()].sort()).toEqual([
+        "_aid",
+        "_pageUrl",
+        "_rid",
+      ]);
+      expect(call.headers.get("content-type")).toBe("application/json");
+      expect(call.headers.get("x-wechat-uin")).toBe("10001");
+      expect(call.headers.get("finger-print-device-id")).toBe("fingerprint-test");
+      expect(call.body).toMatchObject({
+        _log_finder_id: "finder-self",
+        _log_finder_uin: "",
+        rawKeyBuff: "",
+        scene: 7,
+        reqScene: 7,
+        pluginSessionId: null,
+      });
+      expect(call.body.timestamp).toEqual(expect.any(String));
+    }
+    expect(calls[0]?.headers.get("referer"))
+      .toBe("https://channels.weixin.qq.com/");
+    expect(calls[1]?.headers.get("referer"))
+      .toBe("https://channels.weixin.qq.com/micro/interaction/comment");
+    expect(calls[1]?.body).toMatchObject({
+      exportId: "export-1",
+      rootCommentId: "comment-root-1",
+      replyCommentId: "comment-parent-1",
+      content: "测试回复",
+      clientId: "client-1",
+    });
+  });
+
+  it("fails comments closed when an old session lacks captured context", async () => {
+    const session = fakePlatformSession();
+    session.transportProfile = "legacy_root";
+    delete session.requestContext;
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async () => {
+        throw new Error("must not dispatch");
+      },
+    }));
+
+    await expect(gateway.syncComments(session, null)).rejects.toMatchObject({
+      code: "schema_changed:comment_context_missing",
+      endpoint: "postList",
+      ambiguous: false,
     });
   });
 

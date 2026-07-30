@@ -26,6 +26,9 @@ const schema = z.object({
   MAX_RESPONSE_BYTES: z.coerce.number().int().min(1_024).default(2 * 1_024 * 1_024),
   WECHAT_BASE_URL: z.string().url().default("https://channels.weixin.qq.com"),
   WECHAT_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(15_000),
+  WECHAT_BROWSER_EXECUTABLE_PATH: z.string().default(""),
+  WECHAT_BROWSER_CAPTURE_TIMEOUT_MS: z.coerce.number().int().min(5_000).default(45_000),
+  WECHAT_BROWSER_HEADLESS: booleanString.default(true),
   DEMO_AUTO_REPLY_ENABLED: booleanString.default(true),
   ARK_API_KEY: z.string().default(""),
   ARK_BASE_URL: z.string().url().default("https://ark.cn-beijing.volces.com/api/v3"),
@@ -53,6 +56,9 @@ export type AppConfig = Readonly<{
   maxResponseBytes: number;
   wechatBaseUrl: string;
   wechatTimeoutMs: number;
+  wechatBrowserExecutablePath: string;
+  wechatBrowserCaptureTimeoutMs: number;
+  wechatBrowserHeadless: boolean;
   autoReplyEnabled: boolean;
   arkApiKey: string;
   arkBaseUrl: string;
@@ -96,6 +102,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxResponseBytes: parsed.MAX_RESPONSE_BYTES,
     wechatBaseUrl: parsed.WECHAT_BASE_URL.replace(/\/+$/, ""),
     wechatTimeoutMs: parsed.WECHAT_TIMEOUT_MS,
+    wechatBrowserExecutablePath: parsed.WECHAT_BROWSER_EXECUTABLE_PATH.trim(),
+    wechatBrowserCaptureTimeoutMs: parsed.WECHAT_BROWSER_CAPTURE_TIMEOUT_MS,
+    wechatBrowserHeadless: parsed.WECHAT_BROWSER_HEADLESS,
     autoReplyEnabled: parsed.DEMO_AUTO_REPLY_ENABLED,
     arkApiKey: parsed.ARK_API_KEY,
     arkBaseUrl: parsed.ARK_BASE_URL.replace(/\/+$/, ""),
@@ -128,5 +137,7 @@ export function safeStartupSummary(config: AppConfig): Record<string, unknown> {
     modelConfigured: Boolean(config.arkApiKey),
     model: config.arkModel,
     wechatBaseHost: new URL(config.wechatBaseUrl).host,
+    commentCaptureConfigured: Boolean(config.wechatBrowserExecutablePath),
+    commentCaptureHeadless: config.wechatBrowserHeadless,
   };
 }

@@ -42,6 +42,9 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxResponseBytes: 2 * 1_024 * 1_024,
     wechatBaseUrl: "https://channels.weixin.qq.com",
     wechatTimeoutMs: 1_000,
+    wechatBrowserExecutablePath: "",
+    wechatBrowserCaptureTimeoutMs: 5_000,
+    wechatBrowserHeadless: true,
     autoReplyEnabled: true,
     arkApiKey: "test-key",
     arkBaseUrl: "https://ark.example.test/api/v3",
@@ -73,10 +76,13 @@ export class FakeWechatGateway implements WechatGateway {
   readonly sends: Array<{ session: PlatformSession; target: ReplyTarget; text: string; clientId: string }> = [];
   readonly newItems = new Map<string, NormalizedInboundItem[]>();
   accountName: string | null = null;
+  captureRequired = false;
+  captureCalls = 0;
   sendError: WechatApiError | null = null;
   historyPagesRemaining = 1;
   private readonly tokenAccounts = new Map<string, string>();
   private dmGate: AsyncGate | null = null;
+  private captureGate: AsyncGate | null = null;
   private sendGate: AsyncGate | null = null;
   private sendAfterDispatchGate: AsyncGate | null = null;
   private historySequence = 0;
@@ -97,10 +103,27 @@ export class FakeWechatGateway implements WechatGateway {
 
   async pollLogin(pending: PendingWechatLogin): Promise<LoginPollResult> {
     const finderUsername = this.tokenAccounts.get(pending.token) ?? "finder-unknown";
+    if (this.captureRequired) {
+      return {
+        state: "capture_required",
+        session: fakePlatformSession(finderUsername),
+      };
+    }
     return {
       state: "confirmed",
       session: fakePlatformSession(finderUsername),
     };
+  }
+
+  async completeLoginCapture(session: PlatformSession): Promise<PlatformSession> {
+    this.captureCalls += 1;
+    const gate = this.captureGate;
+    if (gate) {
+      this.captureGate = null;
+      gate.markStarted();
+      await gate.wait;
+    }
+    return session;
   }
 
   async syncDirectMessages(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage> {
@@ -172,6 +195,12 @@ export class FakeWechatGateway implements WechatGateway {
     return gate.handle;
   }
 
+  blockNextLoginCapture(): GateHandle {
+    const gate = createGate();
+    this.captureGate = gate.internal;
+    return gate.handle;
+  }
+
   blockNextSend(): GateHandle {
     const gate = createGate();
     this.sendGate = gate.internal;
@@ -187,7 +216,7 @@ export class FakeWechatGateway implements WechatGateway {
 
 export function fakePlatformSession(finderUsername = "finder-self"): PlatformSession {
   return {
-    transportProfile: "legacy_root",
+    transportProfile: "micro_v1",
     cookieJar: serializeJar(new CookieJar()),
     dmCursor: "cursor-1",
     userAgent: "test-agent",
@@ -196,6 +225,23 @@ export function fakePlatformSession(finderUsername = "finder-self"): PlatformSes
     nickname: `账号 ${finderUsername}`,
     token: "test-token",
     acquiredAt: Date.now(),
+    requestContext: {
+      version: 1,
+      aid: "aid-test",
+      pageUrl: "https://channels.weixin.qq.com/platform/post/list",
+      commonBody: {
+        logFinderId: finderUsername,
+        logFinderUin: "",
+        rawKeyBuff: "",
+        pluginSessionId: null,
+        reqScene: 7,
+        scene: 7,
+      },
+      headers: {
+        fingerprintDeviceId: "fingerprint-test",
+        wechatUin: "10001",
+      },
+    },
   };
 }
 

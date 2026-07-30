@@ -35,18 +35,22 @@ After a source baseline is complete, the service SHALL poll bounded incremental 
 - **THEN** the service continues only by the bound `objectId/exportId`, and fails closed if that identity disappears or the page membership changes
 
 #### Scenario: Second-level comment is observed
-- **WHEN** the comment response contains a text node under a top-level comment
+- **WHEN** the comment response contains a text node under a top-level comment with a complete exact write context
 - **THEN** the service creates a separate normalized item with the stable root ID, the current comment as parent, and a sanitized write context with no embedded child list
 
-#### Scenario: Comment write context has an inexact field
-- **WHEN** a captured reply-context field has the wrong string, finite-number, or boolean type, or its comment ID differs from the normalized target
-- **THEN** the source fails closed before creating an item that could reach an irreversible comment write
+#### Scenario: One comment node lacks an exact write context
+- **WHEN** one top-level or nested comment has a missing or wrong-typed reply-context field, or its context comment ID differs from the normalized target
+- **THEN** the service skips that node without creating an item or irreversible reply target, continues validating sibling and child nodes independently, and does not degrade an otherwise valid comment page
 
 ### Requirement: Honest source health
 The service MUST report per-source last success, last error, and schema state without converting an empty result, authentication failure, or parse failure into successful new-content synchronization.
 
+#### Scenario: Comment context is missing
+- **WHEN** the encrypted session does not contain a validated current first-party request context
+- **THEN** the comment source fails closed before dispatch and does not treat the legacy root endpoint's empty response as a healthy comment baseline
+
 #### Scenario: Platform returns an empty valid page
-- **WHEN** a bounded response matches the known schema and contains no items
+- **WHEN** a bounded response from the capture-backed micro endpoint matches the known schema and contains no items
 - **THEN** the service records a successful sync with zero new items
 
 #### Scenario: Platform response shape is unknown

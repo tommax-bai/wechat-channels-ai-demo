@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { CookieJar, type SerializedCookieJar } from "tough-cookie";
+import type { WechatRequestContext } from "../types.js";
 
 export type WechatEndpoint =
   | "authLoginCode"
@@ -18,6 +19,8 @@ export type WechatEndpoint =
 export interface RequestDescriptor {
   path: string;
   encoding: "form" | "json";
+  profile: "legacy" | "micro" | "dual";
+  refererPath?: "/" | "/micro/interaction/comment";
   evidence: "live_probe" | "official_bundle" | "community_candidate";
   irreversible: boolean;
   requiresBaseResp?: boolean;
@@ -27,30 +30,36 @@ export const REQUEST_DESCRIPTORS: Readonly<Record<WechatEndpoint, RequestDescrip
   authLoginCode: {
     path: "/cgi-bin/mmfinderassistant-bin/auth/auth_login_code",
     encoding: "form",
+    profile: "legacy",
     evidence: "live_probe",
     irreversible: false,
   },
   authLoginStatus: {
     path: "/cgi-bin/mmfinderassistant-bin/auth/auth_login_status",
     encoding: "form",
+    profile: "legacy",
     evidence: "live_probe",
     irreversible: false,
   },
   authData: {
     path: "/cgi-bin/mmfinderassistant-bin/auth/auth_data",
     encoding: "form",
+    profile: "dual",
+    refererPath: "/",
     evidence: "community_candidate",
     irreversible: false,
   },
   helperUploadParams: {
     path: "/cgi-bin/mmfinderassistant-bin/helper/helper_upload_params",
     encoding: "form",
+    profile: "legacy",
     evidence: "community_candidate",
     irreversible: false,
   },
   dmLoginCookie: {
     path: "/cgi-bin/mmfinderassistant-bin/private-msg/get-login-cookie",
     encoding: "form",
+    profile: "legacy",
     evidence: "official_bundle",
     irreversible: false,
     requiresBaseResp: true,
@@ -58,12 +67,14 @@ export const REQUEST_DESCRIPTORS: Readonly<Record<WechatEndpoint, RequestDescrip
   dmHistory: {
     path: "/cgi-bin/mmfinderassistant-bin/private-msg/get-history-msg",
     encoding: "form",
+    profile: "legacy",
     evidence: "official_bundle",
     irreversible: false,
   },
   dmNewMessages: {
     path: "/cgi-bin/mmfinderassistant-bin/private-msg/get-new-msg",
     encoding: "form",
+    profile: "legacy",
     evidence: "official_bundle",
     irreversible: false,
     requiresBaseResp: true,
@@ -71,31 +82,39 @@ export const REQUEST_DESCRIPTORS: Readonly<Record<WechatEndpoint, RequestDescrip
   dmSessionInfo: {
     path: "/cgi-bin/mmfinderassistant-bin/private-msg/get-session-info",
     encoding: "json",
+    profile: "legacy",
     evidence: "official_bundle",
     irreversible: false,
   },
   dmSendText: {
     path: "/cgi-bin/mmfinderassistant-bin/private-msg/send-private-msg",
     encoding: "json",
+    profile: "legacy",
     evidence: "official_bundle",
     irreversible: true,
     requiresBaseResp: true,
   },
   postList: {
-    path: "/cgi-bin/mmfinderassistant-bin/post/post_list",
-    encoding: "form",
-    evidence: "community_candidate",
+    path: "/micro/content/cgi-bin/mmfinderassistant-bin/post/post_list",
+    encoding: "json",
+    profile: "micro",
+    refererPath: "/",
+    evidence: "live_probe",
     irreversible: false,
   },
   commentList: {
-    path: "/cgi-bin/mmfinderassistant-bin/comment/comment_list",
-    encoding: "form",
-    evidence: "community_candidate",
+    path: "/micro/interaction/cgi-bin/mmfinderassistant-bin/comment/comment_list",
+    encoding: "json",
+    profile: "micro",
+    refererPath: "/",
+    evidence: "live_probe",
     irreversible: false,
   },
   commentCreate: {
-    path: "/cgi-bin/mmfinderassistant-bin/comment/create_comment",
+    path: "/micro/interaction/cgi-bin/mmfinderassistant-bin/comment/create_comment",
     encoding: "json",
+    profile: "micro",
+    refererPath: "/micro/interaction/comment",
     evidence: "official_bundle",
     irreversible: true,
     requiresBaseResp: true,
@@ -129,6 +148,8 @@ export interface RequestContext {
   jar: CookieJar;
   uin?: string;
   finderUsername?: string;
+  userAgent?: string;
+  requestContext?: WechatRequestContext;
 }
 
 export interface TransportResult {
@@ -160,8 +181,20 @@ export class WechatTransport {
   ): Promise<TransportResult> {
     const descriptor = REQUEST_DESCRIPTORS[endpoint];
     const url = new URL(`${this.baseUrl}${descriptor.path}`);
+    const useMicro = descriptor.profile === "micro"
+      || (descriptor.profile === "dual" && context.requestContext !== undefined);
+    const requestContext = useMicro
+      ? requireMicroRequestContext(context, endpoint)
+      : null;
+    if (requestContext) {
+      url.searchParams.set("_aid", requestContext.aid);
+      url.searchParams.set("_pageUrl", requestContext.pageUrl);
+      url.searchParams.set("_rid", randomUUID());
+    }
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
-    const body = commonBody(context.finderUsername ?? "", businessBody);
+    const body = requestContext
+      ? microBody(requestContext, businessBody)
+      : commonBody(context.finderUsername ?? "", businessBody);
     const cookie = await context.jar.getCookieString(url.toString());
     if (beforeDispatch && !beforeDispatch()) {
       throw new WechatApiError("dispatch_not_authorized", endpoint, false);
@@ -174,14 +207,22 @@ export class WechatTransport {
         method: "POST",
         headers: {
           Accept: "application/json",
-          "Content-Type": descriptor.encoding === "json"
+          "Content-Type": (useMicro || descriptor.encoding === "json")
             ? "application/json"
             : "application/x-www-form-urlencoded;charset=UTF-8",
-          "User-Agent": this.userAgent,
-          "X-Wechat-Uin": context.uin?.trim() || "0000000000",
+          "User-Agent": context.userAgent ?? this.userAgent,
+          "X-Wechat-Uin": requestContext?.headers.wechatUin
+            ?? context.uin?.trim()
+            ?? "0000000000",
+          ...(requestContext ? {
+            Referer: `${this.baseUrl}${descriptor.refererPath ?? "/"}`,
+            "finger-print-device-id": requestContext.headers.fingerprintDeviceId,
+          } : {}),
           ...(cookie ? { Cookie: cookie } : {}),
         },
-        body: descriptor.encoding === "json" ? JSON.stringify(body) : encodeForm(body),
+        body: useMicro || descriptor.encoding === "json"
+          ? JSON.stringify(body)
+          : encodeForm(body),
         redirect: "error",
         signal: controller.signal,
       });
@@ -261,6 +302,62 @@ export class WechatTransport {
       clearTimeout(timer);
     }
   }
+}
+
+function requireMicroRequestContext(
+  context: RequestContext,
+  endpoint: WechatEndpoint,
+): WechatRequestContext {
+  const value = context.requestContext;
+  const missingCode = endpoint === "postList"
+    || endpoint === "commentList"
+    || endpoint === "commentCreate"
+    ? "schema_changed:comment_context_missing"
+    : "schema_changed:request_context_missing";
+  if (
+    !value
+    || value.version !== 1
+    || !bounded(value.aid, 1_024, true)
+    || !bounded(value.pageUrl, 8 * 1_024, true)
+    || !bounded(value.commonBody.logFinderId, 1_024, true)
+    || !bounded(value.commonBody.logFinderUin, 1_024, false)
+    || !bounded(value.commonBody.rawKeyBuff, 16 * 1_024, false)
+    || (value.commonBody.pluginSessionId !== null
+      && !bounded(value.commonBody.pluginSessionId, 4 * 1_024, false))
+    || !Number.isSafeInteger(value.commonBody.reqScene)
+    || !Number.isSafeInteger(value.commonBody.scene)
+    || !bounded(value.headers.fingerprintDeviceId, 1_024, true)
+    || !bounded(value.headers.wechatUin, 1_024, true)
+  ) {
+    throw new WechatApiError(missingCode, endpoint, false);
+  }
+  return value;
+}
+
+function microBody(
+  context: WechatRequestContext,
+  businessBody: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    _log_finder_id: context.commonBody.logFinderId,
+    _log_finder_uin: context.commonBody.logFinderUin,
+    rawKeyBuff: context.commonBody.rawKeyBuff,
+    timestamp: String(Date.now()),
+    scene: context.commonBody.scene,
+    reqScene: context.commonBody.reqScene,
+    pluginSessionId: context.commonBody.pluginSessionId,
+    ...businessBody,
+  };
+}
+
+function bounded(
+  value: unknown,
+  max: number,
+  nonempty: boolean,
+): value is string {
+  return typeof value === "string"
+    && value.length <= max
+    && (!nonempty || value.length > 0);
 }
 
 function commonBody(finderUsername: string, businessBody: Record<string, unknown>): Record<string, unknown> {

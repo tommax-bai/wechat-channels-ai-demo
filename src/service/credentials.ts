@@ -7,6 +7,10 @@ export type StoredCredential =
       value: PendingWechatLogin;
     }
   | {
+      kind: "capturing";
+      value: PlatformSession;
+    }
+  | {
       kind: "session";
       value: PlatformSession;
     };

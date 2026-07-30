@@ -30,6 +30,7 @@ const authLabels = {
   new: "准备连接",
   qr_pending: "等待扫码",
   scanned: "手机待确认",
+  capturing_context: "正在初始化评论",
   authenticated: "身份已验证",
   baseline_sync: "建立历史基线",
   active: "自动回复运行中",
@@ -52,6 +53,14 @@ const sourceLabels = {
 
 const errorLabels = {
   platform_send_in_flight: "发送结果正在确认，请稍后再试",
+};
+
+const authErrorLabels = {
+  browser_capture_unavailable: "登录初始化服务暂不可用，请稍后刷新二维码重试。",
+  browser_capture_timeout: "登录初始化超时，请刷新二维码重新扫码。",
+  browser_capture_identity_mismatch: "登录身份复核失败，请刷新二维码重新扫码。",
+  browser_capture_failed: "登录初始化失败，请刷新二维码重新扫码。",
+  browser_capture_cleanup_failed: "登录初始化未安全结束，请稍后重试。",
 };
 
 let snapshot = null;
@@ -343,7 +352,12 @@ function renderQr(data) {
     ? "正在读取历史私信和评论；基线完成前不会自动回复。"
     : data.authState === "active"
       ? "连接已建立，只会自动回复基线完成后新收到的文本内容。"
-      : "如二维码失效，可重新申请。";
+      : data.authState === "capturing_context"
+        ? "扫码已确认，正在初始化评论连接，请稍候。"
+      : data.authState === "auth_required"
+        ? authErrorLabels[data.authErrorCode]
+          || "登录授权需要更新，请刷新二维码重新扫码。"
+        : "如二维码失效，可重新申请。";
 }
 
 function renderSources(sources) {

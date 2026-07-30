@@ -101,7 +101,10 @@ export class WorkerCoordinator {
     if (this.authRunning) return;
     this.authRunning = true;
     try {
-      const sessions = this.repository.listSessionsByAuth(["qr_pending", "scanned"], Date.now());
+      const sessions = this.repository.listSessionsByAuth(
+        ["qr_pending", "scanned", "capturing_context"],
+        Date.now(),
+      );
       await mapWithConcurrency(
         sessions,
         this.config.workerConcurrency,
@@ -114,6 +117,15 @@ export class WorkerCoordinator {
 
   private async pollAuth(session: SessionRow): Promise<void> {
     const stored = this.readCredential(session.id);
+    if (stored?.kind === "capturing") {
+      try {
+        const completed = await this.wechat.completeLoginCapture(stored.value);
+        await this.completeAuth(session, completed);
+      } catch (error) {
+        this.recordAuthFailure(session, error);
+      }
+      return;
+    }
     if (stored?.kind !== "pending") {
       this.repository.setAuthStateIfGeneration(
         session.id,
@@ -141,6 +153,19 @@ export class WorkerCoordinator {
         await this.completeAuth(session, result.session);
         return;
       }
+      if (result.state === "capture_required") {
+        if (!this.saveCapturingIfCurrent(session, result.session)) return;
+        if (!this.repository.setAuthStateIfGeneration(
+          session.id,
+          session.authGeneration,
+          "capturing_context",
+          null,
+          Date.now(),
+        )) return;
+        const completed = await this.wechat.completeLoginCapture(result.session);
+        await this.completeAuth(session, completed);
+        return;
+      }
       const next = result.pending;
       this.savePendingIfCurrent(session, next);
       const state = result.state === "waiting" ? "qr_pending" : result.state;
@@ -152,15 +177,19 @@ export class WorkerCoordinator {
         Date.now(),
       );
     } catch (error) {
-      const code = safeErrorCode(error);
-      this.repository.setAuthStateIfGeneration(
-        session.id,
-        session.authGeneration,
-        code.startsWith("schema_changed") ? "schema_changed" : "auth_required",
-        code,
-        Date.now(),
-      );
+      this.recordAuthFailure(session, error);
     }
+  }
+
+  private recordAuthFailure(session: SessionRow, error: unknown): void {
+    const code = safeErrorCode(error);
+    this.repository.setAuthStateIfGeneration(
+      session.id,
+      session.authGeneration,
+      code.startsWith("schema_changed") ? "schema_changed" : "auth_required",
+      code,
+      Date.now(),
+    );
   }
 
   private async completeAuth(session: SessionRow, platformSession: PlatformSession): Promise<void> {
@@ -199,6 +228,23 @@ export class WorkerCoordinator {
       "credentials",
     );
     this.repository.updateCredentialEnvelopeIfGeneration(
+      session.id,
+      session.authGeneration,
+      envelope,
+      Date.now(),
+    );
+  }
+
+  private saveCapturingIfCurrent(
+    session: SessionRow,
+    platformSession: PlatformSession,
+  ): boolean {
+    const envelope = this.secureStore.encryptJson(
+      { kind: "capturing", value: platformSession } satisfies StoredCredential,
+      session.id,
+      "credentials",
+    );
+    return this.repository.updateCredentialEnvelopeIfGeneration(
       session.id,
       session.authGeneration,
       envelope,

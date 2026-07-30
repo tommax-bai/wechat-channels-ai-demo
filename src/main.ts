@@ -10,6 +10,7 @@ import { buildServer } from "./server.js";
 import { SessionService } from "./service/session-service.js";
 import { WorkerCoordinator } from "./service/workers.js";
 import { PrivateWechatGateway } from "./wechat/client.js";
+import { PlaywrightWechatSessionCapturer } from "./wechat/browser-capture.js";
 import { WechatTransport } from "./wechat/transport.js";
 
 const config = loadConfig();
@@ -21,7 +22,15 @@ const transport = new WechatTransport({
   timeoutMs: config.wechatTimeoutMs,
   maxResponseBytes: config.maxResponseBytes,
 });
-const wechat = new PrivateWechatGateway(transport);
+const sessionCapturer = config.wechatBrowserExecutablePath
+  ? new PlaywrightWechatSessionCapturer({
+      baseUrl: config.wechatBaseUrl,
+      executablePath: config.wechatBrowserExecutablePath,
+      timeoutMs: config.wechatBrowserCaptureTimeoutMs,
+      headless: config.wechatBrowserHeadless,
+    })
+  : undefined;
+const wechat = new PrivateWechatGateway(transport, sessionCapturer);
 const model: ReplyModel = config.arkApiKey
   ? new ArkReplyModel({
       apiKey: config.arkApiKey,

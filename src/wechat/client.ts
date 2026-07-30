@@ -16,6 +16,7 @@ import {
   type RequestContext,
 } from "./transport.js";
 import type { WechatTransport } from "./transport.js";
+import type { WechatSessionCapturer } from "./browser-capture.js";
 
 export interface PendingWechatLogin {
   token: string;
@@ -27,6 +28,7 @@ export interface PendingWechatLogin {
 export type LoginPollResult =
   | { state: "waiting" | "scanned"; pending: PendingWechatLogin }
   | { state: "expired" | "cancelled" | "no_account"; pending: PendingWechatLogin }
+  | { state: "capture_required"; session: PlatformSession }
   | { state: "confirmed"; session: PlatformSession };
 
 export interface WechatSyncPage {
@@ -55,18 +57,17 @@ interface CommentCursorV2 {
   v: 2;
   postPage: number;
   postIndex: number;
-  postLastBuff: string;
   commentLastBuff: string;
   postObjectId: string | null;
   postExportId: string | null;
   postSnapshot: CommentPostIdentity[];
   postPageHasMore: boolean | null;
-  nextPostLastBuff: string | null;
 }
 
 export interface WechatGateway {
   createLogin(qrTtlMs: number): Promise<PendingWechatLogin>;
   pollLogin(pending: PendingWechatLogin): Promise<LoginPollResult>;
+  completeLoginCapture(session: PlatformSession): Promise<PlatformSession>;
   syncDirectMessages(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage>;
   syncComments(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage>;
   sendReply(
@@ -79,7 +80,10 @@ export interface WechatGateway {
 }
 
 export class PrivateWechatGateway implements WechatGateway {
-  constructor(private readonly transport: WechatTransport) {}
+  constructor(
+    private readonly transport: WechatTransport,
+    private readonly sessionCapturer?: WechatSessionCapturer,
+  ) {}
 
   async createLogin(qrTtlMs: number): Promise<PendingWechatLogin> {
     const jar = this.transport.createJar();
@@ -133,7 +137,7 @@ export class PrivateWechatGateway implements WechatGateway {
     const helper = await this.transport.request("helperUploadParams", {}, authContext);
     const uin = requiredString(helper.data, ["uin", "wechatUin"], "helperUploadParams", "data.uin");
     return {
-      state: "confirmed",
+      state: "capture_required",
       session: {
         transportProfile: "legacy_root",
         cookieJar: serializeJar(jar),
@@ -148,6 +152,66 @@ export class PrivateWechatGateway implements WechatGateway {
     };
   }
 
+  async completeLoginCapture(
+    provisionalSession: PlatformSession,
+  ): Promise<PlatformSession> {
+    if (!this.sessionCapturer) {
+      throw new WechatApiError(
+        "browser_capture_unavailable",
+        "authData",
+        false,
+      );
+    }
+    const session = await this.sessionCapturer.capture(provisionalSession);
+    if (session.transportProfile !== "micro_v1" || !session.requestContext) {
+      throw new WechatApiError(
+        "schema_changed:request_context_missing",
+        "authData",
+        false,
+      );
+    }
+    const verificationJar = this.transport.createJar(session.cookieJar);
+    const verification = await this.transport.request(
+      "authData",
+      {},
+      {
+        jar: verificationJar,
+        uin: session.uin,
+        finderUsername: session.finderUsername,
+        userAgent: session.userAgent,
+        ...(session.requestContext
+          ? { requestContext: session.requestContext }
+          : {}),
+      },
+    );
+    const verifiedFinder = asRecord(
+      verification.data.finderUser,
+      "authData",
+      "data.finderUser",
+    );
+    const verifiedFinderUsername = requiredString(
+      verifiedFinder,
+      ["finderUsername", "finder_username", "username"],
+      "authData",
+      "finderUsername",
+    );
+    if (verifiedFinderUsername !== provisionalSession.finderUsername) {
+      throw new WechatApiError(
+        "browser_capture_identity_mismatch",
+        "authData",
+        false,
+      );
+    }
+    session.cookieJar = serializeJar(verificationJar);
+    session.nickname = requiredString(
+      verifiedFinder,
+      ["nickname", "nickName", "displayName"],
+      "authData",
+      "nickname",
+    );
+    return session;
+  }
+
   async syncDirectMessages(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage> {
     const state = parseDmCursor(cursor);
     const endpoint = state.phase === "history" ? "dmHistory" : "dmNewMessages";
@@ -156,6 +220,7 @@ export class PrivateWechatGateway implements WechatGateway {
       jar,
       uin: session.uin,
       finderUsername: session.finderUsername,
+      userAgent: session.userAgent,
     };
     const result = state.phase === "history"
       ? await this.transport.request(
@@ -255,13 +320,16 @@ export class PrivateWechatGateway implements WechatGateway {
       jar,
       uin: session.uin,
       finderUsername: session.finderUsername,
+      userAgent: session.userAgent,
+      ...(session.requestContext
+        ? { requestContext: session.requestContext }
+        : {}),
     };
     const postsResult = await this.transport.request(
       "postList",
       {
         currentPage: state.postPage,
         pageSize: 20,
-        lastBuff: state.postLastBuff,
         userpageType: 0,
         stickyOrder: false,
       },
@@ -289,7 +357,6 @@ export class PrivateWechatGateway implements WechatGateway {
     const boundState = bindCommentPostCursor(
       state,
       posts,
-      postsResult.data,
       postsHaveMore,
     );
     const items: NormalizedInboundItem[] = [];
@@ -341,6 +408,10 @@ export class PrivateWechatGateway implements WechatGateway {
       jar,
       uin: session.uin,
       finderUsername: session.finderUsername,
+      userAgent: session.userAgent,
+      ...(session.requestContext
+        ? { requestContext: session.requestContext }
+        : {}),
     };
     const result = target.kind === "dm"
       ? await this.transport.request("dmSendText", {
@@ -438,7 +509,7 @@ function encodeDmCursor(value: Omit<DmCursorV1, "v">): string {
 
 function parseCommentCursor(raw: string | null): CommentCursorV2 {
   if (raw === null) {
-    return emptyCommentCursor(1, "");
+    return emptyCommentCursor(1);
   }
   try {
     const value = JSON.parse(raw) as Partial<CommentCursorV2>;
@@ -449,7 +520,6 @@ function parseCommentCursor(raw: string | null): CommentCursorV2 {
       || (value.postPage ?? 0) < 1
       || !Number.isInteger(value.postIndex)
       || (value.postIndex ?? -1) < 0
-      || typeof value.postLastBuff !== "string"
       || typeof value.commentLastBuff !== "string"
       || (value.postObjectId !== null && typeof value.postObjectId !== "string")
       || (value.postExportId !== null && typeof value.postExportId !== "string")
@@ -457,10 +527,6 @@ function parseCommentCursor(raw: string | null): CommentCursorV2 {
       || (
         value.postPageHasMore !== null
         && typeof value.postPageHasMore !== "boolean"
-      )
-      || (
-        value.nextPostLastBuff !== null
-        && typeof value.nextPostLastBuff !== "string"
       )
     ) {
       throw new Error("invalid");
@@ -472,7 +538,6 @@ function parseCommentCursor(raw: string | null): CommentCursorV2 {
         || value.postObjectId !== null
         || value.postExportId !== null
         || value.postPageHasMore !== null
-        || value.nextPostLastBuff !== null
       ) {
         throw new Error("invalid");
       }
@@ -484,11 +549,6 @@ function parseCommentCursor(raw: string | null): CommentCursorV2 {
         || value.postObjectId !== target.objectId
         || value.postExportId !== target.exportId
         || typeof value.postPageHasMore !== "boolean"
-        || (
-          value.postPageHasMore
-            ? typeof value.nextPostLastBuff !== "string" || !value.nextPostLastBuff
-            : value.nextPostLastBuff !== null
-        )
       ) {
         throw new Error("invalid");
       }
@@ -499,18 +559,16 @@ function parseCommentCursor(raw: string | null): CommentCursorV2 {
   }
 }
 
-function emptyCommentCursor(postPage: number, postLastBuff: string): CommentCursorV2 {
+function emptyCommentCursor(postPage: number): CommentCursorV2 {
   return {
     v: 2,
     postPage,
     postIndex: 0,
-    postLastBuff,
     commentLastBuff: "",
     postObjectId: null,
     postExportId: null,
     postSnapshot: [],
     postPageHasMore: null,
-    nextPostLastBuff: null,
   };
 }
 
@@ -602,7 +660,6 @@ function commentPageHasMore(data: Record<string, unknown>, rows: unknown[]): boo
 function bindCommentPostCursor(
   state: CommentCursorV2,
   posts: unknown[],
-  postData: Record<string, unknown>,
   postsHaveMore: boolean,
 ): CommentCursorV2 & { postObjectId: string; postExportId: string } {
   const observed = posts.map((rawPost) => {
@@ -635,9 +692,6 @@ function bindCommentPostCursor(
       postExportId: target.exportId,
       postSnapshot: observed,
       postPageHasMore: postsHaveMore,
-      nextPostLastBuff: postsHaveMore
-        ? continuationBuffer(postData, posts, "postList", "post.lastBuff")
-        : null,
     };
   }
 
@@ -709,10 +763,7 @@ function nextCommentCursor(
     };
   }
   if (!state.postPageHasMore) return null;
-  if (!state.nextPostLastBuff) {
-    throw new WechatApiError("schema_changed:post.lastBuff", "postList", false);
-  }
-  return emptyCommentCursor(state.postPage + 1, state.nextPostLastBuff);
+  return emptyCommentCursor(state.postPage + 1);
 }
 
 function continuationBuffer(
@@ -743,21 +794,15 @@ function normalizeCommentTree(
     "commentList",
     "comment.commentId",
   );
-  const username = requiredString(
-    comment,
-    ["username", "finderUsername"],
-    "commentList",
-    "comment.username",
-  );
-  const children = comment.levelTwoComment;
-  if (!Array.isArray(children)) {
+  const childrenValue = comment.levelTwoComment;
+  if (childrenValue !== undefined && !Array.isArray(childrenValue)) {
     throw new WechatApiError(
       "schema_changed:comment.levelTwoComment",
       "commentList",
       false,
     );
   }
-  const commentContext = sanitizeCommentContext(comment, commentId);
+  const children = childrenValue ?? [];
   const rootId = rootCommentId ?? commentId;
   const descendants = children.flatMap((child) => normalizeCommentTree(
     child,
@@ -766,7 +811,9 @@ function normalizeCommentTree(
     exportId,
     rootId,
   ));
-  if (username === ownUsername) return descendants;
+  const commentContext = sanitizeCommentContext(comment, commentId);
+  const username = optionalString(comment, ["username", "finderUsername"])?.trim();
+  if (!commentContext || !username || username === ownUsername) return descendants;
 
   const text = requiredString(
     comment,
@@ -795,7 +842,7 @@ function normalizeCommentTree(
 function sanitizeCommentContext(
   comment: Record<string, unknown>,
   normalizedCommentId: string,
-): Record<string, unknown> {
+): Record<string, unknown> | null {
   const stringFields = [
     "commentId",
     "commentNickname",
@@ -815,26 +862,19 @@ function sanitizeCommentContext(
   ] as const;
   for (const field of stringFields) {
     if (typeof comment[field] !== "string") {
-      throw new WechatApiError(`schema_changed:comment.${field}`, "commentList", false);
+      return null;
     }
   }
   for (const field of numberFields) {
     if (typeof comment[field] !== "number" || !Number.isFinite(comment[field])) {
-      throw new WechatApiError(`schema_changed:comment.${field}`, "commentList", false);
+      return null;
     }
   }
   if (typeof comment.readFlag !== "boolean") {
-    throw new WechatApiError("schema_changed:comment.readFlag", "commentList", false);
-  }
-  if (!Array.isArray(comment.levelTwoComment)) {
-    throw new WechatApiError(
-      "schema_changed:comment.levelTwoComment",
-      "commentList",
-      false,
-    );
+    return null;
   }
   if (comment.commentId !== normalizedCommentId) {
-    throw new WechatApiError("schema_changed:comment.commentId", "commentList", false);
+    return null;
   }
   return {
     levelTwoComment: [],

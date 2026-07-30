@@ -1,15 +1,23 @@
 ## ADDED Requirements
 
-### Requirement: Browserless QR login into a global account pool
-The service SHALL let a visitor request and poll a WeChat Channels QR login without starting or connecting to a browser runtime, SHALL bind the resulting platform authority to one encrypted server-side demo session, and SHALL preserve all other logged-in demo sessions.
+### Requirement: QR login with bounded first-party context capture
+The service SHALL let a visitor request and poll a WeChat Channels QR login over pure HTTP, SHALL perform one bounded server-side first-party browser capture after scan confirmation to obtain the current authenticated comment request context, SHALL close that browser before background synchronization starts, SHALL bind the resulting platform authority to one encrypted server-side demo session, and SHALL preserve all other logged-in demo sessions.
 
 #### Scenario: Two visitors request login concurrently
 - **WHEN** two different browser sessions request QR login
 - **THEN** the service returns different QR tokens, stores them under different encrypted session scopes, and does not replace either pending login
 
 #### Scenario: QR login succeeds
-- **WHEN** the platform reports a confirmed scan and the service obtains a bounded identity-bearing authenticated session
+- **WHEN** the platform reports a confirmed scan and the service obtains both a bounded identity-bearing authenticated session and a valid first-party request context for the same Finder identity
 - **THEN** the service marks that demo session authenticated, starts its baseline synchronization, and makes its safe account summary available in the global session list
+
+#### Scenario: First-party context capture succeeds
+- **WHEN** the temporary browser emits a valid HTTPS `/auth/auth_data` request for the authenticated creator page
+- **THEN** the service stores only the bounded request context and refreshed first-party cookies in the encrypted session, closes the browser, and performs subsequent synchronization without a browser
+
+#### Scenario: First-party context capture fails
+- **WHEN** Chrome is unavailable, capture times out, the request host/path is not exact, a required bounded field is missing, or the captured Finder identity differs from the confirmed login
+- **THEN** the service closes the temporary browser, does not mark the session authenticated, and reports an actionable authentication error without persisting a partial request context
 
 #### Scenario: QR status succeeds without usable identity
 - **WHEN** polling reports success but identity or required session material cannot be validated

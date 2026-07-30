@@ -11,7 +11,7 @@
 - [x] 2.3 Implement versioned AES-256-GCM credential envelopes with session-bound additional authenticated data
 - [x] 2.4 Implement logout and retention cleanup that delete only the owning session scope
 
-## 3. Browserless WeChat Channels authentication
+## 3. QR authentication and one-time browser context capture
 
 - [x] 3.1 Implement bounded private-endpoint transport and explicit endpoint descriptors
 - [x] 3.2 Implement QR creation and status polling with current success, scan, expiry, cancellation, and schema states
@@ -64,6 +64,15 @@
 - [x] 9.5 Deploy the committed build behind a public HTTPS Quick Tunnel with Secure cookies while retaining the loopback-only application listener
 - [ ] 9.6 Verify the public browser flow, global account switching, polling fallback, worker continuity after page closure, exact backend model access, and unchanged AIDCP/isales services
 
+## 10. Capture-backed comment repair
+
+- [x] 10.1 Update the QR-auth and inbound-sync contracts for one bounded post-scan first-party request-context capture and fail-closed removal of the legacy empty comment path
+- [x] 10.2 Implement an injectable one-time Playwright/Chrome session capturer with bounded exact-host request parsing, encrypted context persistence, cookie refresh, cleanup, and safe configuration diagnostics
+- [x] 10.3 Route comment post-list, comment-list, and comment-create through the capture-backed micro descriptors with exact query, header, JSON common-body, and referer contracts
+- [x] 10.4 Add capture/parser/transport/integration regressions and run lint, typecheck, tests, build, audit, and strict OpenSpec validation
+- [ ] 10.5 Install Chrome from the Alibaba Cloud mirror, deploy the committed build to DEV, request a fresh scan, and verify non-empty comment read before permitting an exact live comment reply
+- [ ] 10.6 Configure `https://dev.yytt.com.cn` with a valid certificate, dedicated Nginx reverse proxy, fixed `PUBLIC_ORIGIN`, Secure cookies, same-origin SSE, HTTP redirect, and unchanged unrelated server blocks/services
+
 <!--
 Initial validation 2026-07-30:
 - npm run lint: pass
@@ -93,4 +102,12 @@ Shared-demo follow-up validation 2026-07-30:
 - Comment baseline is healthy but still returned zero items for an account known to have comments; the current browserless legacy transport therefore has no honest live comment-send target
 - AIDCP Cloud and all four isales services remained active and were not restarted
 - The operator Mac's Clash Fake-IP route closes trycloudflare TLS, so a public-origin browser pass on that machine remains pending even though the public HTTPS path passes from DEV; keep 9.6 open
+
+Capture-backed comment repair validation 2026-07-30:
+- npm test: 7 files, 51 tests passed
+- npm run lint, npm run typecheck, npm run build: pass
+- npm audit and npm audit --omit=dev: 0 vulnerabilities
+- openspec validate build-multi-user-wechat-ai-demo --strict: pass
+- Browser capture regressions cover authoritative cookie replacement, invalid-candidate skipping, bounded cleanup, exact identity, and encrypted provisional-state persistence
+- Comment regressions cover micro request query/header/body contracts, post pagination without post lastBuff, identity-bound cursors, nested context sanitization, and fail-closed missing session context
 -->

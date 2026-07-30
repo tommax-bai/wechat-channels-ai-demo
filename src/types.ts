@@ -2,6 +2,7 @@ export type AuthState =
   | "new"
   | "qr_pending"
   | "scanned"
+  | "capturing_context"
   | "authenticated"
   | "baseline_sync"
   | "active"
@@ -24,8 +25,26 @@ export type ReplyState =
   | "failed"
   | "submitted_unknown";
 
+export interface WechatRequestContext {
+  version: 1;
+  aid: string;
+  pageUrl: string;
+  commonBody: {
+    logFinderId: string;
+    logFinderUin: string;
+    rawKeyBuff: string;
+    pluginSessionId: string | null;
+    reqScene: number;
+    scene: number;
+  };
+  headers: {
+    fingerprintDeviceId: string;
+    wechatUin: string;
+  };
+}
+
 export interface PlatformSession {
-  transportProfile: "legacy_root";
+  transportProfile: "legacy_root" | "micro_v1";
   cookieJar: SerializedCookieJar;
   dmCursor: string;
   userAgent: string;
@@ -34,6 +53,7 @@ export interface PlatformSession {
   nickname: string;
   token: string;
   acquiredAt: number;
+  requestContext?: WechatRequestContext;
 }
 
 export interface DirectMessageTarget {
@@ -83,6 +103,7 @@ export interface ReplyModelResult {
 
 export interface SessionSnapshot {
   authState: AuthState;
+  authErrorCode: string | null;
   accountDisplayName: string | null;
   qrDataUrl: string | null;
   qrExpiresAt: number | null;

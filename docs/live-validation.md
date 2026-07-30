@@ -1,23 +1,26 @@
 # Live validation checklist
 
-Automated tests prove the local service contract, tenant isolation, encryption, baseline behavior, idempotency and send-outcome handling. They do not prove that the current private WeChat Channels endpoints accept the complete browserless flow.
+Automated tests prove the local service contract, encryption, baseline behavior, idempotency and send-outcome handling. They do not prove that the current private WeChat Channels endpoints accept the one-time browser-assisted login bootstrap or return the known live comments.
 
 Run these stages in order against an explicitly selected Demo account. Stop at the first failed gate.
 
 ## 1. Deployment and custody
 
-- [ ] HTTPS terminates at the Demo origin.
+- [ ] HTTPS terminates at `https://dev.yytt.com.cn`; HTTP redirects to HTTPS,
+  and only the dedicated Demo server blocks proxy to the loopback listener.
 - [ ] `SESSION_ENCRYPTION_KEY` is unique to this deployment and is not logged or committed.
 - [ ] `ARK_API_KEY` belongs to the Demo environment.
 - [ ] The exact `ARK_MODEL` is accepted by that key; `ModelNotOpen` is shown as failure and no other model is substituted.
 - [ ] The operator confirms the customer-facing private-interface and credential-custody notice.
 
-## 2. Browserless authentication
+## 2. QR authentication and bounded context capture
 
-- [ ] Request a QR and verify no Chrome, AdsPower, Electron or WebView process is launched by the service.
+- [ ] Request a QR and verify no Chrome process is launched before scan confirmation.
 - [ ] Scan and confirm one QR.
 - [ ] Confirm login polling reaches the platform-confirmed state.
-- [ ] Confirm `/auth/auth_data` returns the scanned Finder identity.
+- [ ] Confirm one isolated Chrome process imports only that session's WeChat cookies and captures an exact first-party `/auth/auth_data` request.
+- [ ] Confirm the captured Finder identity matches the scanned Finder identity.
+- [ ] Confirm Chrome closes before the session enters baseline synchronization.
 - [ ] Confirm the helper endpoint returns the UIN.
 - [ ] Restart the service and confirm the encrypted session can be reused.
 - [ ] Log out and confirm the credential and session-owned rows are deleted.
@@ -32,7 +35,8 @@ Run these stages in order against an explicitly selected Demo account. Stop at t
 - [ ] Post list returns both `objectId` and `exportId`.
 - [ ] Comment list uses `exportId`, returns a stable `commentId`, and preserves the complete reply target object.
 - [ ] Reorder the post-list fixture between comment pages and confirm the durable cursor remains bound to the same `objectId/exportId`; removing that post must fail closed.
-- [ ] A second-level comment is normalized as its own inbound item with the root ID, its own parent ID, and a write context whose `levelTwoComment` is empty.
+- [ ] A second-level comment with complete exact context is normalized as its own inbound item with the root ID, its own parent ID, and a write context whose `levelTwoComment` is empty.
+- [ ] A slim comment without complete write context is skipped and never queued for reply, while valid sibling and child nodes continue to synchronize.
 - [ ] A multi-page post/comment fixture drains every advertised continuation cursor before the baseline becomes complete.
 - [ ] Existing content appears as historical and creates zero reply jobs.
 - [ ] A new text item after baseline creates exactly one queued reply job.
@@ -58,4 +62,4 @@ This stage requires a separately approved disposable direct-message conversation
 
 ## 5. Delivery boundary
 
-Only after all applicable checks pass may the Demo be described as “browserless login and automatic reply verified for the named Demo account on the validation date.” It must not be described as an official, stable, or generally production-ready video-channel integration.
+Only after all applicable checks pass may the Demo be described as “QR login, one-time browser-assisted comment bootstrap, and automatic reply verified for the named Demo account on the validation date.” It must not be described as fully browserless, official, stable, or generally production-ready.

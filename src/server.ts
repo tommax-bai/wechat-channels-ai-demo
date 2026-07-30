@@ -71,6 +71,9 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     status: "ready",
     modelConfigured: Boolean(deps.config.arkApiKey),
     autoReplyEnabled: deps.config.autoReplyEnabled,
+    commentCaptureConfigured: Boolean(
+      deps.config.wechatBrowserExecutablePath,
+    ),
   }));
 
   app.get("/api/session", async (request, reply) => {

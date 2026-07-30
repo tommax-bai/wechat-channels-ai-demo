@@ -2,7 +2,7 @@
 
 This is a greenfield customer-facing demo, not an AIDCP feature branch. It must run as one independently deployable service and must not import or call AIDCP Edge, Cloud, Console, account, approval, risk, pacing, or orchestration components.
 
-The WeChat Channels creator-assistant endpoints are private and undocumented. A live probe has established that a login code can currently be requested and polled without a browser, but post-scan session capture, non-empty direct-message/comment reads, and real sends remain live-account validation gates. The service therefore isolates all platform-specific shapes behind one adapter and reports unsupported or changed schemas explicitly.
+The WeChat Channels creator-assistant endpoints are private and undocumented. A live probe established that a login code can be requested and polled without a browser, and that the resulting cookies are sufficient for direct messages. The current non-empty comment path additionally requires `_aid`, `_pageUrl`, the first-party common request body, `X-WECHAT-UIN`, and `finger-print-device-id`, which are observable only from the authenticated creator page. The service therefore keeps QR creation and polling pure HTTP, performs one bounded server-side browser capture after scan confirmation, encrypts the captured context with the session, then closes the browser before normal workers start.
 
 The demo is multi-account and intentionally shared. WeChat credentials stay encrypted server-side, while every visitor can list and select any unexpired authenticated demo session through opaque server-generated identifiers. There is no administrator password, workspace boundary, or browser-session isolation in this demo. Expiry, logout, exact selected-session resolution, and one worker per Finder identity still apply.
 
@@ -11,7 +11,8 @@ The demo is multi-account and intentionally shared. WeChat credentials stay encr
 **Goals:**
 
 - Serve one polished demo page and its API from a single Node.js process.
-- Let visitors request and scan browserless WeChat Channels login QR codes while preserving all existing logged-in accounts in a global shared session list.
+- Let visitors request and scan WeChat Channels login QR codes while preserving all existing logged-in accounts in a global shared session list.
+- Capture the authenticated creator page's bounded request context once after scan confirmation and close the server-side browser before background synchronization starts.
 - Let every visitor switch the active demo session without an administrator, workspace, or browser-ownership check.
 - Encrypt every persisted platform credential and bind it to exactly one demo session and one observed Finder identity.
 - Baseline existing direct messages and comments, display them, and auto-reply only to newly discovered inbound items.
@@ -19,13 +20,13 @@ The demo is multi-account and intentionally shared. WeChat credentials stay encr
 - Send each reply to the exact source item at most once automatically and project platform-confirmed, failed, and ambiguous outcomes honestly.
 - Make login, sync, model, send, stop, logout, and schema errors visible in the page.
 - Keep workers running for unexpired sessions independently of whether any browser page or event stream remains open.
-- Support a public HTTPS demo path with SSE where supported and bounded snapshot polling where the public proxy does not support SSE.
+- Support the fixed public HTTPS demo origin with SSE and bounded snapshot polling where a temporary proxy does not support SSE.
 
 **Non-Goals:**
 
 - Production SLA, horizontal scaling, billing, organization accounts, permanent customer onboarding, or long-term data retention.
 - Per-visitor account privacy, administrator authentication, workspace membership, or browser-session isolation.
-- Browser, AdsPower, Electron, AIDCP protocol, AIDCP database, or AIDCP policy integration.
+- Persistent customer-side browser, AdsPower, Electron, AIDCP protocol, AIDCP database, or AIDCP policy integration.
 - Image, audio, video, proactive outbound, bulk historical replies, publishing, content browsing, likes, follows, or cross-account orchestration.
 - Claiming the private endpoints are official or stable.
 - Automatically retrying an irreversible reply whose platform result is unknown.
@@ -50,19 +51,19 @@ The service requires a 32-byte `SESSION_ENCRYPTION_KEY`. QR tokens, post-login p
 
 An in-memory-only alternative would lose every login on restart and make the demo unreliable. Plain SQLite values are unacceptable because this internet-facing service centrally holds customer session authority.
 
-### 4. Pure HTTP login is a state machine behind a platform adapter
+### 4. QR login uses pure HTTP polling plus one bounded first-party context capture
 
-The adapter owns `auth_login_code`, `auth_login_status`, `auth_data`, helper UIN, and private-message login-cookie calls. The application sees only:
+The adapter owns `auth_login_code`, `auth_login_status`, `auth_data`, helper UIN, and private-message login-cookie calls. After the platform confirms the QR, the adapter imports the bounded cookie jar into an isolated headless Chrome context, opens the first-party creator post page, captures exactly one valid `/auth/auth_data` request, absorbs refreshed first-party cookies, and closes the browser. The browser profile is temporary and contains no cross-session state. The application sees only:
 
-`new -> qr_pending -> scanned -> authenticated -> baseline_sync -> active`
+`new -> qr_pending -> scanned -> capturing_context -> authenticated -> baseline_sync -> active`
 
 Terminal/recoverable states include `expired`, `cancelled`, `no_account`, `auth_required`, `schema_changed`, `stopped`, and `logged_out`.
 
-Only an identity-bearing `auth_data` response plus required session material establishes `authenticated`. QR creation, polling success, or cookie presence alone never does. A fresh QR replaces the previous pending token for the same demo session.
+Only an identity-bearing `auth_data` response plus the captured versioned request context establishes `authenticated`. The capture validates the exact HTTPS host and path, bounded query/header/body fields, Finder identity consistency, and cookie domains before encrypted persistence. QR creation, polling success, cookie presence, or an empty legacy comment response alone never does. Capture timeout or browser unavailability leaves the session unauthenticated with an actionable error. A fresh QR replaces the previous pending token for the same demo session.
 
 ### 5. Baseline and incremental content share one normalized inbox
 
-The platform adapter maps direct messages and top-level or second-level comments into `InboundItem` records containing source type, immutable external item ID, exact reply target fields, author display name, text, platform timestamp, and raw-shape version. Comment pagination binds its durable cursor to the current post's stable `objectId/exportId` and fails closed if that identity disappears, instead of applying a continuation cursor to a reordered post. Every comment node receives its own sanitized write context with an empty nested-comment array; all captured string, finite-number, and boolean fields must have their exact types and the context comment ID must match the normalized target ID. A unique key on `(demo_session_id, source, external_item_id)` prevents duplicate processing.
+The platform adapter maps direct messages and top-level or second-level comments with an exact reply context into `InboundItem` records containing source type, immutable external item ID, exact reply target fields, author display name, text, platform timestamp, and raw-shape version. Comment pagination binds its durable cursor to the current post's stable `objectId/exportId` and fails closed if that identity disappears, instead of applying a continuation cursor to a reordered post. Each comment node is validated independently: a complete context is sanitized with an empty nested-comment array, while a node with a missing, wrong-typed, or mismatched context is skipped without creating an irreversible reply target or degrading otherwise valid siblings and children. A unique key on `(demo_session_id, source, external_item_id)` prevents duplicate processing.
 
 Every page in the first source snapshot is inserted with `reply_eligible=false`; the durable baseline flag changes only after the platform reports no continuation page. Later unseen inbound items are eligible only if they are authored by someone other than the authenticated Finder identity and were first observed after the baseline. Historical content remains visible but cannot enter the reply queue. One Finder identity HMAC may be bound to only one unexpired demo session so repeated logins or multiple visitors cannot run duplicate auto-repliers for the same account. All post-await source, inbox, cursor, and credential writes compare the expected authentication generation so an old account request cannot pollute a refreshed login.
 
@@ -82,15 +83,16 @@ Per-session stop and a global `DEMO_AUTO_REPLY_ENABLED` switch prevent new claim
 
 Tests use an injected fake model. The Ark call has one end-to-end timeout and a bounded response body; only complete `finish_reason=stop` text is accepted. Model output is trimmed, stripped of empty content, and bounded to the platform text limit; no fallback model is selected silently. Public HTML, JavaScript, and API projections do not expose the concrete model identifier: the page uses `chat角色模型`, `chat-llm`, and `CHAT回复`.
 
-### 8. The page uses selected-session SSE with a proxy-compatible polling fallback
+### 8. The fixed DEV HTTPS origin uses selected-session SSE with a proxy-compatible polling fallback
 
 The static client loads a snapshot for the cookie-selected session and, on compatible origins, subscribes to a same-origin SSE endpoint resolved through the same selection. Events contain only safe projected data. The page shows QR expiry, login identity display name, baseline progress, inbound content, generated reply, delivery status, last sync, and stop/logout actions.
 
-The public Cloudflare Quick Tunnel used by this demo does not support SSE. On `.trycloudflare.com`, the client therefore does not open `EventSource` and instead reloads the authoritative session and shared-session snapshots on a fixed five-second interval. The same bounded interval may also repair missed UI state on compatible origins, while SSE remains the low-latency path. WebSockets add unnecessary bidirectional protocol surface for a server-originated update stream.
+The primary public origin is `https://dev.yytt.com.cn`, where Nginx terminates TLS and proxies the loopback-only application listener, including same-origin SSE. HTTP redirects to this origin. If a Cloudflare Quick Tunnel is used temporarily, `.trycloudflare.com` does not open `EventSource` and instead reloads the authoritative session and shared-session snapshots on a fixed five-second interval. The same bounded interval may also repair missed UI state on compatible origins, while SSE remains the low-latency path. WebSockets add unnecessary bidirectional protocol surface for a server-originated update stream.
 
 ## Risks / Trade-offs
 
 - [Private WeChat endpoint or schema changes] → Keep endpoint descriptors and parsers isolated, validate bounded shapes, mark only the affected capability `schema_changed`, and expose diagnostics without credentials.
+- [The one-time browser capture is unavailable or fails to emit a valid first-party request] → Fail authentication closed, close the temporary browser, retain no browser profile, and ask for a fresh QR rather than falling back to the legacy empty comment path.
 - [A customer grants a central demo service account authority] → Explain the boundary on the login page, encrypt at rest, use short retention, provide immediate logout/delete, and do not deploy publicly without HTTPS.
 - [Any public visitor can operate a shared logged-in account] → Treat this as an explicit demo convenience rather than tenant isolation; keep credentials opaque, enforce exact selected-session resolution, retain the session TTL and same-account worker uniqueness, and do not add a page warning or access gate that the demo did not request.
 - [A reply send times out after reaching the platform] → Record `submitted_unknown` and never automatically resend.
@@ -103,19 +105,19 @@ The public Cloudflare Quick Tunnel used by this demo does not support SSE. On `.
 ## Migration Plan
 
 1. Build and validate locally with mocked WeChat and model servers.
-2. Run a real-account DEV login validation without enabling automatic sends.
+2. Install a pinned Chrome/Chromium executable from the selected operator mirror, then run a real-account DEV login and bounded request-context capture without enabling automatic comment sends.
 3. Validate non-empty direct-message and comment reads against an explicitly selected demo account.
 4. Enable one exact disposable direct-message and comment target for live send verification only after separate approval.
-5. Deploy one public HTTPS instance with a fresh encryption key and model credentials; keep the application listener on loopback and do not copy local SQLite or session material.
+5. Deploy one public HTTPS instance at `https://dev.yytt.com.cn` with a fresh encryption key and model credentials; keep the application listener on loopback and do not copy local SQLite or session material.
 6. Roll back by stopping the service and deleting its isolated deployment volume; no AIDCP service or data is involved.
 
 For the DEV public demo, the service uses an isolated verified Node.js 22
 runtime, a dedicated unprivileged system user, a root-owned environment file,
-and a loopback-only application listener. A separately managed Cloudflare Quick
-Tunnel provides the public HTTPS hostname and the application keeps Secure
-cookies enabled. The Quick Tunnel transport uses the five-second snapshot
-polling fallback described above; it does not change worker ownership or widen
-the demo into an AIDCP service.
+and a loopback-only application listener. Nginx terminates TLS for the fixed
+`https://dev.yytt.com.cn` hostname and the application keeps Secure cookies
+enabled. A temporary Quick Tunnel may still use the five-second snapshot
+polling fallback described above; neither proxy changes worker ownership or
+widens the demo into an AIDCP service.
 
 ## Open Questions
 

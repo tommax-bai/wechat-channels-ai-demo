@@ -120,6 +120,8 @@ export class SessionService {
           { errorCorrectionLevel: "M", margin: 2, width: 256 },
         );
       }
+    } else if (credential?.kind === "capturing") {
+      accountDisplayName = credential.value.nickname;
     } else if (credential?.kind === "session") {
       accountDisplayName = credential.value.nickname;
     }
@@ -159,6 +161,7 @@ export class SessionService {
     });
     return {
       authState: current.authState,
+      authErrorCode: current.lastErrorCode,
       accountDisplayName,
       qrDataUrl,
       qrExpiresAt,

@@ -110,6 +110,34 @@ describe("multi-user demo flow", () => {
     expect(states).toContain("auth_required");
   });
 
+  it("persists the provisional platform session before bounded browser capture", async () => {
+    const server = requireApp(app);
+    gateway.captureRequired = true;
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    const captureGate = gateway.blockNextLoginCapture();
+    const run = workers.runOnce();
+    await captureGate.started;
+
+    const duringCapture = await snapshot(server, visitor.cookie);
+    expect(duringCapture.authState).toBe("capturing_context");
+    expect(duringCapture.authErrorCode).toBeNull();
+    const sessionId = requireSessionId(database);
+    const envelope = repository.getCredentialEnvelope(sessionId);
+    if (!envelope) throw new Error("missing capture credential envelope");
+    const stored = secureStore.decryptJson<StoredCredential>(
+      envelope,
+      sessionId,
+      "credentials",
+    );
+    expect(stored.kind).toBe("capturing");
+
+    captureGate.release();
+    await run;
+    expect((await snapshot(server, visitor.cookie)).authState).toBe("active");
+    expect(gateway.captureCalls).toBe(1);
+  });
+
   it("lists and switches shared logged-in sessions without replacing the browser session", async () => {
     const server = requireApp(app);
     const accountOwner = await bootstrap(server);
