@@ -25,6 +25,14 @@ ssh -i ~/codes/dev-0722.pem -N \
 Then open `http://localhost:4310`. Public customer access remains blocked until
 an HTTPS hostname and reverse-proxy configuration are explicitly assigned.
 
+Remote dependency installation uses Alibaba Cloud's npm mirror and must replace
+every lockfile registry host:
+
+```bash
+npm ci --registry=https://registry.npmmirror.com \
+  --replace-registry-host=always
+```
+
 ## Validation
 
 - `systemctl is-active wechat-channels-ai-demo.service`
