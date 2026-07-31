@@ -15,5 +15,6 @@
 - [x] 3.1 Add regressions for existing-row migration, post-deadline worker continuity, unauthenticated cleanup, public projection, and explicit platform auth rejection
 - [x] 3.2 Run lint, typecheck, tests, build, audit, and strict OpenSpec validation
   <!-- repo=wechat-channels-ai-demo; validation=npm run check (8 files, 63 tests), npm audit --audit-level=high (0 vulnerabilities), openspec validate preserve-demo-login-until-platform-expiry --strict -->
-- [ ] 3.3 Commit and fast-forward the standalone main branch, then record the integrated commit and validation evidence
+- [x] 3.3 Commit and fast-forward the standalone main branch, then record the integrated commit and validation evidence
+  <!-- repo=wechat-channels-ai-demo; integrated_commit=759b89a2375abf65f6338f53130a0924d4ec4673; branch=main; remote=not_configured -->
 - [ ] 3.4 Back up and deploy the clean committed main build to DEV, restart only the Demo service, and verify the retained account plus public HTTPS behavior
