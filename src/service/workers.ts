@@ -279,6 +279,12 @@ export class WorkerCoordinator {
       for (const source of this.repository.getSources(session.id)) {
         if (source.state === "schema_changed" || source.state === "auth_required") continue;
         await this.syncSource(current, stored.value, source);
+        const latest = this.repository.getSession(session.id);
+        if (
+          !latest
+          || latest.authGeneration !== session.authGeneration
+          || latest.authState === "auth_required"
+        ) break;
       }
       this.savePlatformSession(session.id, session.authGeneration, stored.value);
       this.repository.setSessionActiveIfBaselinesComplete(
@@ -516,11 +522,12 @@ export class WorkerCoordinator {
         );
       } catch (error) {
         const ambiguous = error instanceof WechatApiError && error.ambiguous;
+        const code = safeErrorCode(error);
         const recorded = this.repository.updateReply(
           job.id,
           job.sessionId,
           ambiguous ? "submitted_unknown" : "failed",
-          { errorCode: safeErrorCode(error) },
+          { errorCode: code },
           Date.now(),
         );
         if (!recorded) {
@@ -532,6 +539,15 @@ export class WorkerCoordinator {
           dispatchSession.authGeneration,
           freshStored.value,
         );
+        if (!ambiguous && code === "auth_required") {
+          this.repository.setAuthStateIfGeneration(
+            job.sessionId,
+            dispatchSession.authGeneration,
+            "auth_required",
+            code,
+            Date.now(),
+          );
+        }
         return;
       }
       const confirmed = result.accepted && result.externalId;
@@ -572,7 +588,7 @@ export class WorkerCoordinator {
     this.cleanupRunning = true;
     try {
       const count = this.repository.deleteExpired(Date.now());
-      if (count > 0) this.log.info(`[demo] expired sessions removed count=${count}`);
+      if (count > 0) this.log.info(`[demo] expired transient sessions removed count=${count}`);
     } finally {
       this.cleanupRunning = false;
     }

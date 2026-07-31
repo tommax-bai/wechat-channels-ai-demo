@@ -5,7 +5,11 @@ import {
   digestSessionToken,
 } from "../crypto.js";
 import type { SecureStore } from "../crypto.js";
-import type { DemoRepository, SessionRow } from "../repository.js";
+import {
+  isSessionRetained,
+  type DemoRepository,
+  type SessionRow,
+} from "../repository.js";
 import type {
   NormalizedInboundItem,
   ReplyModelResult,
@@ -33,7 +37,7 @@ export class SessionService {
     if (rawToken) {
       const id = digestSessionToken(rawToken);
       const existing = this.repository.getSession(id);
-      if (existing && existing.expiresAt > now && existing.authState !== "logged_out") {
+      if (existing && isSessionRetained(existing, now) && existing.authState !== "logged_out") {
         return { token: rawToken, row: existing, created: false };
       }
       if (existing) this.repository.deleteSession(id);
@@ -42,7 +46,7 @@ export class SessionService {
   }
 
   createBrowserSession(now = Date.now()): BrowserSession {
-    if (this.repository.countUnexpiredSessions(now) >= this.config.maxActiveSessions) {
+    if (this.repository.countRetainedSessions(now) >= this.config.maxActiveSessions) {
       throw new SessionLimitError();
     }
     const token = createSessionToken();
@@ -50,7 +54,7 @@ export class SessionService {
     const row = this.repository.createSession(
       id,
       now,
-      now + this.config.sessionTtlMs,
+      now + this.config.pendingSessionTtlMs,
       this.config.autoReplyEnabled && Boolean(this.config.arkApiKey),
     );
     return { token, row, created: true };
@@ -59,19 +63,19 @@ export class SessionService {
   resolve(rawToken: string | undefined, now = Date.now()): SessionRow | null {
     if (!rawToken) return null;
     const row = this.repository.getSession(digestSessionToken(rawToken));
-    if (!row || row.expiresAt <= now || row.authState === "logged_out") return null;
+    if (!row || !isSessionRetained(row, now) || row.authState === "logged_out") return null;
     return row;
   }
 
   resolveShared(sessionId: string | undefined, now = Date.now()): SessionRow | null {
     if (!sessionId) return null;
     const row = this.repository.getSession(sessionId);
-    if (!row || row.expiresAt <= now || row.authState === "logged_out") return null;
+    if (!row || !isSessionRetained(row, now) || row.authState === "logged_out") return null;
     return row;
   }
 
   listSharedSessions(now = Date.now()): SharedSessionSummary[] {
-    return this.repository.listUnexpiredSessions(now).flatMap((session) => {
+    return this.repository.listRetainedSessions(now).flatMap((session) => {
       const credential = this.readCredential(session.id);
       if (credential?.kind !== "session") return [];
       return [{
@@ -79,7 +83,6 @@ export class SessionService {
         accountDisplayName: credential.value.nickname,
         authState: session.authState,
         automationEnabled: session.automationEnabled,
-        expiresAt: session.expiresAt,
       }];
     });
   }
@@ -91,7 +94,12 @@ export class SessionService {
       session.id,
       "credentials",
     );
-    this.repository.beginQr(session.id, now, envelope);
+    this.repository.beginQr(
+      session.id,
+      now,
+      now + this.config.pendingSessionTtlMs,
+      envelope,
+    );
   }
 
   setAutomation(session: SessionRow, enabled: boolean): SessionRow {
@@ -166,7 +174,6 @@ export class SessionService {
       qrDataUrl,
       qrExpiresAt,
       automationEnabled: current.automationEnabled,
-      expiresAt: current.expiresAt,
       sources,
       timeline,
       service: {

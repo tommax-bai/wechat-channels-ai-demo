@@ -497,6 +497,91 @@ describe("multi-user demo flow", () => {
     expect((await snapshot(server, visitor.cookie)).authState).toBe("qr_pending");
   });
 
+  it("keeps an authenticated account active after its former local deadline", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    const sessionId = requireSessionId(database);
+    database?.prepare("UPDATE demo_sessions SET expires_at = 0 WHERE id = ?")
+      .run(sessionId);
+    gateway.newItems.set("finder-1", [
+      fakeDm("after-former-deadline", "finder-1", "超过八小时后仍然回复"),
+    ]);
+    await workers.runOnce();
+
+    const retained = repository.getSession(sessionId);
+    expect(retained?.platformPersistent).toBe(true);
+    const current = await snapshot(server, visitor.cookie);
+    expect(current.authState).toBe("active");
+    expect(current).not.toHaveProperty("expiresAt");
+    expect(current.timeline.find((item) => item.text === "超过八小时后仍然回复"))
+      .toMatchObject({
+        replyState: "confirmed",
+        replyText: "您好，已收到：超过八小时后仍然回复",
+      });
+
+    const shared = await server.inject({ method: "GET", url: "/api/sessions" });
+    expect(shared.statusCode).toBe(200);
+    expect(shared.json<{ sessions: unknown[] }>().sessions[0])
+      .not.toHaveProperty("expiresAt");
+  });
+
+  it("cleans an abandoned unauthenticated session after its transient deadline", async () => {
+    const server = requireApp(app);
+    await bootstrap(server);
+    const sessionId = requireSessionId(database);
+    database?.prepare("UPDATE demo_sessions SET expires_at = 0 WHERE id = ?")
+      .run(sessionId);
+
+    await workers.runOnce();
+
+    expect(repository.getSession(sessionId)).toBeNull();
+  });
+
+  it("requests a fresh QR when synchronization explicitly rejects authorization", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    gateway.dmSyncError = new WechatApiError("auth_required", "dmNewMessages", false);
+    await workers.runOnce();
+
+    const current = await snapshot(server, visitor.cookie);
+    expect(current).toMatchObject({
+      authState: "auth_required",
+      authErrorCode: "auth_required",
+    });
+    expect(repository.getSession(requireSessionId(database))?.platformPersistent)
+      .toBe(true);
+  });
+
+  it("requests a fresh QR when an unambiguous send rejects authorization", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    gateway.newItems.set("finder-1", [
+      fakeDm("send-auth-required", "finder-1", "登录失效测试"),
+    ]);
+    gateway.sendError = new WechatApiError("auth_required", "dmSendText", false);
+    await workers.runOnce();
+
+    const current = await snapshot(server, visitor.cookie);
+    expect(current).toMatchObject({
+      authState: "auth_required",
+      authErrorCode: "auth_required",
+    });
+    expect(current.timeline.find((item) => item.text === "登录失效测试"))
+      .toMatchObject({
+        replyState: "failed",
+        replyErrorCode: "auth_required",
+      });
+  });
+
   it("deletes only the owning session on logout", async () => {
     const server = requireApp(app);
     const a = await bootstrap(server);

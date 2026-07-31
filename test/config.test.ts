@@ -27,4 +27,25 @@ describe("session cookie security", () => {
       SESSION_COOKIE_SECURE: "0",
     })).toThrow("allowed in production only on a loopback HOST");
   });
+
+  it("separates browser cookie duration from unauthenticated cleanup", () => {
+    const config = loadConfig({
+      ...baseEnv,
+      SESSION_COOKIE_MAX_AGE_SECONDS: "31536000",
+      PENDING_SESSION_TTL_MS: "86400000",
+    });
+
+    expect(config.sessionCookieMaxAgeSeconds).toBe(31_536_000);
+    expect(config.pendingSessionTtlMs).toBe(86_400_000);
+  });
+
+  it("accepts the former session TTL only as a transient cleanup fallback", () => {
+    const config = loadConfig({
+      ...baseEnv,
+      SESSION_TTL_MS: "28800000",
+    });
+
+    expect(config.pendingSessionTtlMs).toBe(28_800_000);
+    expect(config.sessionCookieMaxAgeSeconds).toBe(31_536_000);
+  });
 });

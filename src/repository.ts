@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { SqliteDatabase } from "./database.js";
+import {
+  ROLLBACK_SAFE_PLATFORM_EXPIRY_MS,
+  type SqliteDatabase,
+} from "./database.js";
 import type {
   AuthState,
   InboundSource,
@@ -12,6 +15,7 @@ export interface SessionRow {
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+  platformPersistent: boolean;
   authState: AuthState;
   automationEnabled: boolean;
   authGeneration: number;
@@ -63,6 +67,7 @@ interface RawSession {
   created_at: number;
   updated_at: number;
   expires_at: number;
+  platform_persistent: number;
   auth_state: AuthState;
   automation_enabled: number;
   auth_generation: number;
@@ -112,9 +117,13 @@ interface RawReply {
 export class DemoRepository {
   constructor(private readonly db: SqliteDatabase) {}
 
-  countUnexpiredSessions(now: number): number {
+  countRetainedSessions(now: number): number {
     const row = this.db
-      .prepare("SELECT COUNT(*) AS count FROM demo_sessions WHERE expires_at > ?")
+      .prepare(`
+        SELECT COUNT(*) AS count
+        FROM demo_sessions
+        WHERE platform_persistent = 1 OR expires_at > ?
+      `)
       .get(now) as { count: number };
     return row.count;
   }
@@ -148,27 +157,29 @@ export class DemoRepository {
     if (states.length === 0) return [];
     const placeholders = states.map(() => "?").join(",");
     const rows = this.db
-      .prepare(`SELECT * FROM demo_sessions WHERE auth_state IN (${placeholders}) AND expires_at > ? ORDER BY created_at`)
+      .prepare(`
+        SELECT * FROM demo_sessions
+        WHERE auth_state IN (${placeholders})
+          AND (platform_persistent = 1 OR expires_at > ?)
+        ORDER BY created_at
+      `)
       .all(...states, now) as RawSession[];
     return rows.map(mapSession);
   }
 
-  listUnexpiredSessions(now: number): SessionRow[] {
+  listRetainedSessions(now: number): SessionRow[] {
     const rows = this.db
       .prepare(`
         SELECT * FROM demo_sessions
-        WHERE expires_at > ? AND auth_state <> 'logged_out'
+        WHERE (platform_persistent = 1 OR expires_at > ?)
+          AND auth_state <> 'logged_out'
         ORDER BY updated_at DESC
       `)
       .all(now) as RawSession[];
     return rows.map(mapSession);
   }
 
-  touchSession(id: string, now: number, expiresAt: number): void {
-    this.db.prepare("UPDATE demo_sessions SET updated_at = ?, expires_at = ? WHERE id = ?").run(now, expiresAt, id);
-  }
-
-  beginQr(id: string, now: number, credentialEnvelope: string): number {
+  beginQr(id: string, now: number, expiresAt: number, credentialEnvelope: string): number {
     return this.db.transaction(() => {
       const session = requireRow(this.getSession(id), "session");
       if (this.hasSendingReply(id)) {
@@ -179,10 +190,11 @@ export class DemoRepository {
         .prepare(`
           UPDATE demo_sessions
           SET auth_state = 'qr_pending', auth_generation = ?, run_generation = run_generation + 1,
-              account_key_hash = NULL, last_error_code = NULL, updated_at = ?
+              account_key_hash = NULL, platform_persistent = 0, expires_at = ?,
+              last_error_code = NULL, updated_at = ?
           WHERE id = ?
         `)
-        .run(generation, now, id);
+        .run(generation, expiresAt, now, id);
       this.db.prepare("DELETE FROM encrypted_credentials WHERE session_id = ?").run(id);
       this.db
         .prepare(`
@@ -234,10 +246,11 @@ export class DemoRepository {
         .prepare(`
           UPDATE demo_sessions
           SET auth_state = 'baseline_sync', account_key_hash = ?, last_error_code = NULL,
+              platform_persistent = 1, expires_at = ?,
               run_generation = run_generation + 1, updated_at = ?
           WHERE id = ? AND auth_generation = ?
         `)
-        .run(accountKeyHash, now, id, generation);
+        .run(accountKeyHash, ROLLBACK_SAFE_PLATFORM_EXPIRY_MS, now, id, generation);
       if (result.changes === 0) return false;
       this.db
         .prepare(`
@@ -481,7 +494,7 @@ export class DemoRepository {
           WHERE r.state = 'queued'
             AND s.auth_state = 'active'
             AND s.automation_enabled = 1
-            AND s.expires_at > ?
+            AND (s.platform_persistent = 1 OR s.expires_at > ?)
             AND r.run_generation = s.run_generation
             AND NOT EXISTS (
               SELECT 1 FROM reply_jobs busy
@@ -562,7 +575,7 @@ export class DemoRepository {
             SELECT 1 FROM demo_sessions
             WHERE id = ? AND auth_state = 'active' AND automation_enabled = 1
               AND auth_generation = ? AND run_generation = ?
-              AND expires_at > ?
+              AND (platform_persistent = 1 OR expires_at > ?)
           )
       `)
       .run(
@@ -594,7 +607,8 @@ export class DemoRepository {
         WHERE r.id = ? AND r.session_id = ? AND r.state = 'sending'
           AND r.run_generation = ? AND s.run_generation = ?
           AND s.auth_generation = ? AND s.auth_state = 'active'
-          AND s.automation_enabled = 1 AND s.expires_at > ?
+          AND s.automation_enabled = 1
+          AND (s.platform_persistent = 1 OR s.expires_at > ?)
       `)
       .get(
         replyId,
@@ -620,7 +634,7 @@ export class DemoRepository {
         .prepare(`
           SELECT r.id, r.session_id, r.run_generation,
                  s.auth_state, s.automation_enabled, s.run_generation AS current_generation,
-                 s.expires_at
+                 s.expires_at, s.platform_persistent
           FROM reply_jobs r
           JOIN demo_sessions s ON s.id = r.session_id
           WHERE r.state IN ('generating', 'generated')
@@ -633,6 +647,7 @@ export class DemoRepository {
           automation_enabled: number;
           current_generation: number;
           expires_at: number;
+          platform_persistent: number;
         }>;
       const markUnknown = this.db.prepare(`
         UPDATE reply_jobs
@@ -655,7 +670,7 @@ export class DemoRepository {
           row.auth_state === "active"
           && row.automation_enabled === 1
           && row.run_generation === row.current_generation
-          && row.expires_at > now;
+          && (row.platform_persistent === 1 || row.expires_at > now);
         markReversible.run(
           authorized ? "queued" : "failed",
           authorized ? "process_restarted_before_dispatch" : "authorization_changed_during_restart",
@@ -703,7 +718,8 @@ export class DemoRepository {
     return this.db
       .prepare(`
         DELETE FROM demo_sessions
-        WHERE expires_at <= ?
+        WHERE platform_persistent = 0
+          AND expires_at <= ?
           AND NOT EXISTS (
             SELECT 1
             FROM reply_jobs
@@ -739,6 +755,7 @@ function mapSession(row: RawSession): SessionRow {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
+    platformPersistent: row.platform_persistent === 1,
     authState: row.auth_state,
     automationEnabled: row.automation_enabled === 1,
     authGeneration: row.auth_generation,
@@ -746,6 +763,10 @@ function mapSession(row: RawSession): SessionRow {
     accountKeyHash: row.account_key_hash,
     lastErrorCode: row.last_error_code,
   };
+}
+
+export function isSessionRetained(session: SessionRow, now: number): boolean {
+  return session.platformPersistent || session.expiresAt > now;
 }
 
 function mapSource(row: RawSource): SourceRow {

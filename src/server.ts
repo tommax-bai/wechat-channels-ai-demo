@@ -9,7 +9,11 @@ import Fastify, {
 } from "fastify";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
-import type { DemoRepository, SessionRow } from "./repository.js";
+import {
+  isSessionRetained,
+  type DemoRepository,
+  type SessionRow,
+} from "./repository.js";
 import {
   SessionLimitError,
   type SessionService,
@@ -188,7 +192,7 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     const eventsTimer = setInterval(() => {
       if (closed) return;
       const current = deps.repository.getSession(session.id);
-      if (!current || current.expiresAt <= Date.now()) {
+      if (!current || !isSessionRetained(current, Date.now())) {
         reply.raw.write("event: expired\ndata: {}\n\n");
         reply.raw.end();
         close();
@@ -292,7 +296,7 @@ function cookieOptions(config: AppConfig): {
     httpOnly: true,
     sameSite: "lax",
     secure: config.sessionCookieSecure,
-    maxAge: Math.floor(config.sessionTtlMs / 1_000),
+    maxAge: config.sessionCookieMaxAgeSeconds,
   };
 }
 

@@ -2,6 +2,8 @@ import Database from "better-sqlite3";
 
 export type SqliteDatabase = Database.Database;
 
+export const ROLLBACK_SAFE_PLATFORM_EXPIRY_MS = 8_640_000_000_000_000;
+
 export function openDatabase(path: string): SqliteDatabase {
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
@@ -13,6 +15,7 @@ export function openDatabase(path: string): SqliteDatabase {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL,
+      platform_persistent INTEGER NOT NULL DEFAULT 0 CHECK (platform_persistent IN (0, 1)),
       auth_state TEXT NOT NULL,
       automation_enabled INTEGER NOT NULL DEFAULT 1 CHECK (automation_enabled IN (0, 1)),
       auth_generation INTEGER NOT NULL DEFAULT 0,
@@ -95,5 +98,23 @@ export function openDatabase(path: string): SqliteDatabase {
   if (!replyColumns.some((column) => column.name === "platform_receipt_hash")) {
     db.exec("ALTER TABLE reply_jobs ADD COLUMN platform_receipt_hash TEXT");
   }
+  const sessionColumns = db.pragma("table_info(demo_sessions)") as Array<{ name: string }>;
+  if (!sessionColumns.some((column) => column.name === "platform_persistent")) {
+    db.exec(`
+      ALTER TABLE demo_sessions
+      ADD COLUMN platform_persistent INTEGER NOT NULL DEFAULT 0
+        CHECK (platform_persistent IN (0, 1))
+    `);
+  }
+  db.prepare(`
+    UPDATE demo_sessions
+    SET platform_persistent = 1,
+        expires_at = MAX(expires_at, ?)
+    WHERE account_key_hash IS NOT NULL
+      AND auth_state IN (
+        'authenticated', 'baseline_sync', 'active', 'stopped',
+        'auth_required', 'schema_changed'
+      )
+  `).run(ROLLBACK_SAFE_PLATFORM_EXPIRY_MS);
   return db;
 }

@@ -26,7 +26,7 @@ Single Fastify service
     └─ SQLite WAL
 ```
 
-每个浏览器 Cookie 是 256 位随机值，SQLite 只保存其 SHA-256。视频号 CookieJar、身份、私信游标、消息正文、目标信息和模型回复使用 AES-256-GCM 字段级加密，AAD 绑定当前租户和记录用途。同一视频号身份只能绑定一个未过期 Demo 会话。
+每个浏览器 Cookie 是 256 位随机值，SQLite 只保存其 SHA-256。视频号 CookieJar、身份、私信游标、消息正文、目标信息和模型回复使用 AES-256-GCM 字段级加密，AAD 绑定当前租户和记录用途。同一视频号身份只能绑定一个保留中的 Demo 会话。认证完成后，服务不会按本地时钟强制结束登录态；只有主动退出或视频号接口明确返回登录失效才要求重新扫码。
 
 ## Local run
 
@@ -56,9 +56,10 @@ If `ARK_API_KEY` is empty, QR login and read-only UI can still run, but automati
 |---|---|---|
 | `SESSION_ENCRYPTION_KEY` | Base64 or 64-hex 32-byte AES key | required |
 | `SESSION_COOKIE_SECURE` | Require HTTPS for the browser session cookie | production: `1`, otherwise `0` |
+| `SESSION_COOKIE_MAX_AGE_SECONDS` | Opaque browser selector cookie lifetime; does not control platform login | `365d` |
 | `DATABASE_PATH` | Isolated SQLite database | `./data/demo.sqlite` |
-| `SESSION_TTL_MS` | Absolute Demo session retention | `24h` in code, `8h` in example |
-| `MAX_ACTIVE_SESSIONS` | Concurrent unexpired visitor cap | `100` |
+| `PENDING_SESSION_TTL_MS` | Cleanup deadline for abandoned, unauthenticated Demo sessions | `24h` |
+| `MAX_ACTIVE_SESSIONS` | Concurrent retained visitor/account cap | `100` |
 | `WORKER_CONCURRENCY` | Cross-tenant auth, sync, and reply concurrency cap | `4` |
 | `WECHAT_BASE_URL` | WeChat Channels origin or a test double | official origin |
 | `DEMO_AUTO_REPLY_ENABLED` | Service-wide new-job switch | `1` |
@@ -75,6 +76,8 @@ Secrets and message bodies are never included in startup summaries or request-er
 `new → qr_pending → scanned → baseline_sync → active`
 
 The service maintains one complete `tough-cookie` jar from the initial login-code response onward. A QR poll result alone is not login success: `/auth/auth_data` must return a Finder identity and the helper endpoint must return a UIN before the service stores an authenticated session.
+
+Authenticated sessions remain encrypted on the server across page closure and service restart. The Demo does not invent an eight-hour platform expiry. An explicit `auth_required` response from WeChat changes the account to a visible re-login state and stops new synchronization and sends until a fresh QR succeeds.
 
 ### Baseline and new content
 
@@ -123,7 +126,7 @@ Account, Finder, message and reply-target IDs are never accepted from the browse
 - WeChat private endpoints and response shapes can change without notice; each source fails closed on unknown required fields.
 - New inbound text and the generated reply are sent to the configured Volcengine Ark account. The operator must disclose and approve that data flow.
 - The fixed prompt blocks obvious credential requests, but the Demo does not provide a complete moderation, policy, or human-approval system.
-- Public exposure requires HTTPS, network-level rate limiting, a deployment-specific encryption key, limited retention, and an explicit privacy/compliance review.
+- Public exposure requires HTTPS, network-level rate limiting, a deployment-specific encryption key, explicit logout/data removal, and an explicit privacy/compliance review.
 - A platform write is counted only when the expected platform ID is returned. Ambiguous writes are not retried automatically.
 - The initial scope handles inbound text DMs plus top-level and second-level text comments; non-text media is not automated.
 

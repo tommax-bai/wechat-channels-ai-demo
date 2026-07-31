@@ -30,8 +30,9 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     databasePath: ":memory:",
     sessionCookieName: "wechat_demo_session",
     sessionCookieSecure: false,
+    sessionCookieMaxAgeSeconds: 365 * 24 * 60 * 60,
     encryptionKey: Buffer.alloc(32, 7),
-    sessionTtlMs: 60 * 60 * 1_000,
+    pendingSessionTtlMs: 60 * 60 * 1_000,
     qrTtlMs: 4 * 60 * 1_000,
     loginPollMs: 10,
     syncPollMs: 10,
@@ -78,6 +79,7 @@ export class FakeWechatGateway implements WechatGateway {
   accountName: string | null = null;
   captureRequired = false;
   captureCalls = 0;
+  dmSyncError: WechatApiError | null = null;
   sendError: WechatApiError | null = null;
   historyPagesRemaining = 1;
   private readonly tokenAccounts = new Map<string, string>();
@@ -133,6 +135,7 @@ export class FakeWechatGateway implements WechatGateway {
       gate.markStarted();
       await gate.wait;
     }
+    if (this.dmSyncError) throw this.dmSyncError;
     setSessionCookie(session, "sync_refresh", "1");
     if (cursor === null || cursor.startsWith("history-")) {
       this.historyPagesRemaining = Math.max(0, this.historyPagesRemaining - 1);

@@ -266,7 +266,7 @@ function render(data) {
     || !data.service.modelConfigured
     || !data.service.autoReplyEnabled;
   elements.logoutButton.disabled = data.authState === "new";
-  elements.sessionExpiry.textContent = `会话到期：${formatTime(data.expiresAt)}`;
+  elements.sessionExpiry.textContent = "登录态：由视频号平台维持";
   renderQr(data);
   renderSources(data.sources);
   renderTimeline(data.timeline);
@@ -293,7 +293,7 @@ function renderSharedSessions(data) {
     const name = document.createElement("strong");
     name.textContent = session.accountDisplayName;
     const meta = document.createElement("small");
-    meta.textContent = `${authLabels[session.authState] || session.authState} · 到期 ${formatTime(session.expiresAt)}`;
+    meta.textContent = `${authLabels[session.authState] || session.authState} · 平台登录态`;
     info.append(name, meta);
     const button = document.createElement("button");
     const selected = session.sessionId === data.selectedSessionId;

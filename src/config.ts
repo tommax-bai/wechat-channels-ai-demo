@@ -14,8 +14,10 @@ const schema = z.object({
   DATABASE_PATH: z.string().default("./data/demo.sqlite"),
   SESSION_COOKIE_NAME: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).default("wechat_demo_session"),
   SESSION_COOKIE_SECURE: booleanString.optional(),
+  SESSION_COOKIE_MAX_AGE_SECONDS: z.coerce.number().int().min(3_600).default(365 * 24 * 60 * 60),
   SESSION_ENCRYPTION_KEY: z.string().min(1),
-  SESSION_TTL_MS: z.coerce.number().int().min(60_000).default(24 * 60 * 60 * 1_000),
+  PENDING_SESSION_TTL_MS: z.coerce.number().int().min(60_000).optional(),
+  SESSION_TTL_MS: z.coerce.number().int().min(60_000).optional(),
   QR_TTL_MS: z.coerce.number().int().min(30_000).default(4 * 60 * 1_000),
   LOGIN_POLL_MS: z.coerce.number().int().min(500).default(2_000),
   SYNC_POLL_MS: z.coerce.number().int().min(2_000).default(15_000),
@@ -44,8 +46,9 @@ export type AppConfig = Readonly<{
   databasePath: string;
   sessionCookieName: string;
   sessionCookieSecure: boolean;
+  sessionCookieMaxAgeSeconds: number;
   encryptionKey: Buffer;
-  sessionTtlMs: number;
+  pendingSessionTtlMs: number;
   qrTtlMs: number;
   loginPollMs: number;
   syncPollMs: number;
@@ -90,8 +93,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     databasePath,
     sessionCookieName: parsed.SESSION_COOKIE_NAME,
     sessionCookieSecure,
+    sessionCookieMaxAgeSeconds: parsed.SESSION_COOKIE_MAX_AGE_SECONDS,
     encryptionKey,
-    sessionTtlMs: parsed.SESSION_TTL_MS,
+    pendingSessionTtlMs:
+      parsed.PENDING_SESSION_TTL_MS
+      ?? parsed.SESSION_TTL_MS
+      ?? 24 * 60 * 60 * 1_000,
     qrTtlMs: parsed.QR_TTL_MS,
     loginPollMs: parsed.LOGIN_POLL_MS,
     syncPollMs: parsed.SYNC_POLL_MS,
@@ -132,6 +139,8 @@ export function safeStartupSummary(config: AppConfig): Record<string, unknown> {
     databasePath: config.databasePath,
     publicOriginConfigured: Boolean(config.publicOrigin),
     secureSessionCookie: config.sessionCookieSecure,
+    pendingSessionTtlMs: config.pendingSessionTtlMs,
+    sessionCookieMaxAgeSeconds: config.sessionCookieMaxAgeSeconds,
     autoReplyEnabled: config.autoReplyEnabled,
     workerConcurrency: config.workerConcurrency,
     modelConfigured: Boolean(config.arkApiKey),

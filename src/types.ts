@@ -108,7 +108,6 @@ export interface SessionSnapshot {
   qrDataUrl: string | null;
   qrExpiresAt: number | null;
   automationEnabled: boolean;
-  expiresAt: number;
   sources: Array<{
     source: InboundSource;
     state: SourceState;
@@ -138,6 +137,5 @@ export interface SharedSessionSummary {
   accountDisplayName: string;
   authState: AuthState;
   automationEnabled: boolean;
-  expiresAt: number;
 }
 import type { SerializedCookieJar } from "tough-cookie";

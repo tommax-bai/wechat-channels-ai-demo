@@ -29,4 +29,15 @@ describe("public model copy", () => {
       "window.setInterval(() => void refresh(), 5_000)",
     );
   });
+
+  it("describes platform-authoritative login state without an eight-hour expiry", () => {
+    const publicSource = ["index.html", "app.js"]
+      .map((file) => readFileSync(join(process.cwd(), "public", file), "utf8"))
+      .join("\n");
+
+    expect(publicSource).toContain("登录态：由视频号平台维持");
+    expect(publicSource).not.toContain("会话到期");
+    expect(publicSource).not.toContain("session.expiresAt");
+    expect(publicSource).not.toContain("data.expiresAt");
+  });
 });
