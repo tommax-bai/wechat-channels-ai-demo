@@ -21,6 +21,6 @@
 
 ## 5. Integration and DEV Release
 
-- [ ] 5.1 Commit the isolated change, integrate it into clean standalone `main`, and record that the repository has no configured remote if push remains unavailable.
+- [x] 5.1 Commit the isolated change as `3587051`, fast-forward it into clean standalone `main`, and record that this repository has no configured remote, so no push target exists.
 - [ ] 5.2 Back up the independent DEV release, environment, unit, and SQLite data; configure the funnel base URL/timeout without exposing existing secrets; deploy from clean `main` and restart only `wechat-channels-ai-demo.service`.
 - [ ] 5.3 Verify DEV upstream allowlist health, Demo service/HTTPS health, database migration, retained account sessions, provider-setting readback, source-specific adapter behavior, and no impact/restart to AIDCP or isales services; record exact evidence and any remaining real-write gate.
