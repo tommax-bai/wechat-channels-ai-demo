@@ -15,6 +15,7 @@ export type AuthState =
   | "logged_out";
 
 export type InboundSource = "dm" | "comment";
+export type ReplyProvider = "chat-llm" | "funnel";
 export type SourceState = "pending" | "healthy" | "auth_required" | "schema_changed" | "error";
 export type ReplyState =
   | "queued"
@@ -22,6 +23,7 @@ export type ReplyState =
   | "generated"
   | "sending"
   | "confirmed"
+  | "skipped"
   | "failed"
   | "submitted_unknown";
 
@@ -88,10 +90,15 @@ export interface ReplyModelInput {
   source: InboundSource;
   authorName: string;
   text: string;
+  jobNumber?: string;
+  conversationId?: string;
+  messageId?: string;
 }
 
 export interface ReplyModelResult {
   text: string;
+  messages?: string[];
+  disposition?: "reply" | "skip";
   model: string;
   requestId?: string;
   usage?: {
@@ -108,6 +115,8 @@ export interface SessionSnapshot {
   qrDataUrl: string | null;
   qrExpiresAt: number | null;
   automationEnabled: boolean;
+  replyProvider: ReplyProvider;
+  funnelJobNumber: string | null;
   sources: Array<{
     source: InboundSource;
     state: SourceState;
@@ -129,6 +138,9 @@ export interface SessionSnapshot {
   service: {
     autoReplyEnabled: boolean;
     modelConfigured: boolean;
+    chatReplyConfigured: boolean;
+    funnelReplyConfigured: boolean;
+    selectedProviderConfigured: boolean;
   };
 }
 
@@ -137,5 +149,7 @@ export interface SharedSessionSummary {
   accountDisplayName: string;
   authState: AuthState;
   automationEnabled: boolean;
+  replyProvider: ReplyProvider;
+  funnelJobNumber: string | null;
 }
 import type { SerializedCookieJar } from "tough-cookie";

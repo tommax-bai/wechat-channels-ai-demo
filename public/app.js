@@ -9,7 +9,14 @@ const elements = {
   automationBadge: document.querySelector("#automationBadge"),
   automationButton: document.querySelector("#automationButton"),
   logoutButton: document.querySelector("#logoutButton"),
+  providerLabel: document.querySelector("#providerLabel"),
   modelStatus: document.querySelector("#modelStatus"),
+  chatProviderInput: document.querySelector("#chatProviderInput"),
+  funnelProviderInput: document.querySelector("#funnelProviderInput"),
+  funnelProviderStatus: document.querySelector("#funnelProviderStatus"),
+  funnelJobNumberInput: document.querySelector("#funnelJobNumberInput"),
+  providerHint: document.querySelector("#providerHint"),
+  saveReplyProviderButton: document.querySelector("#saveReplyProviderButton"),
   dmHealth: document.querySelector("#dmHealth"),
   dmDot: document.querySelector("#dmDot"),
   commentHealth: document.querySelector("#commentHealth"),
@@ -53,6 +60,8 @@ const sourceLabels = {
 
 const errorLabels = {
   platform_send_in_flight: "发送结果正在确认，请稍后再试",
+  funnel_provider_unavailable: "招聘接口未配置",
+  funnel_job_number_required: "请填写招聘岗位号",
 };
 
 const authErrorLabels = {
@@ -77,6 +86,11 @@ let autoStarted = false;
 let logoutArmed = false;
 let logoutTimer = null;
 let sharedSessions = { selectedSessionId: null, sessions: [] };
+let providerFormSessionId = null;
+let providerFormDirty = false;
+let providerSaving = false;
+let sessionTransitioning = false;
+let sessionGeneration = 0;
 
 async function api(path, options = {}) {
   const headers = { ...options.headers };
@@ -95,12 +109,15 @@ async function api(path, options = {}) {
 }
 
 async function refresh() {
-  if (refreshing) return;
+  if (refreshing || sessionTransitioning) return;
+  const generation = sessionGeneration;
   refreshing = true;
   try {
-    sharedSessions = await api("/api/sessions");
-    renderSharedSessions(sharedSessions);
-    if (sharedSessions.selectedSessionId === null && sharedSessions.sessions.length > 0) {
+    const nextSharedSessions = await api("/api/sessions");
+    if (generation !== sessionGeneration) return;
+    if (nextSharedSessions.selectedSessionId === null && nextSharedSessions.sessions.length > 0) {
+      sharedSessions = nextSharedSessions;
+      renderSharedSessions(sharedSessions);
       snapshot = null;
       eventSource?.close();
       eventSource = null;
@@ -108,7 +125,11 @@ async function refresh() {
       showView("sessions");
       return;
     }
-    snapshot = await api("/api/session");
+    const nextSnapshot = await api("/api/session");
+    if (generation !== sessionGeneration) return;
+    sharedSessions = nextSharedSessions;
+    snapshot = nextSnapshot;
+    renderSharedSessions(sharedSessions);
     elements.currentSessionTab.disabled = false;
     render(snapshot);
     connectEvents();
@@ -124,40 +145,82 @@ async function refresh() {
 }
 
 async function selectSession(sessionId) {
+  if (sessionTransitioning) return;
+  const generation = ++sessionGeneration;
+  let synchronized = false;
   eventSource?.close();
   eventSource = null;
+  sessionTransitioning = true;
   setSessionButtonsDisabled(true);
+  elements.addSessionButton.disabled = true;
+  if (snapshot) updateProviderControls(snapshot, true);
   try {
-    snapshot = await api("/api/sessions/select", {
+    const nextSnapshot = await api("/api/sessions/select", {
       method: "POST",
       body: JSON.stringify({ sessionId }),
     });
+    const nextSharedSessions = await api("/api/sessions");
+    if (generation !== sessionGeneration) return;
+    snapshot = nextSnapshot;
+    sharedSessions = nextSharedSessions;
+    providerFormSessionId = nextSharedSessions.selectedSessionId || sessionId;
+    providerFormDirty = false;
     autoStarted = true;
     elements.currentSessionTab.disabled = false;
     showView("current");
-    render(snapshot);
-    sharedSessions = await api("/api/sessions");
     renderSharedSessions(sharedSessions);
+    render(snapshot);
     connectEvents();
+    synchronized = true;
+  } catch (error) {
+    if (generation === sessionGeneration) renderFatal(error.message);
   } finally {
-    setSessionButtonsDisabled(false);
+    if (generation === sessionGeneration) {
+      sessionTransitioning = false;
+      setSessionButtonsDisabled(false);
+      elements.addSessionButton.disabled = false;
+      if (synchronized && snapshot) updateProviderControls(snapshot, true);
+      else void refresh();
+    }
   }
 }
 
 async function addSession() {
+  if (sessionTransitioning) return;
+  const generation = ++sessionGeneration;
+  let synchronized = false;
   eventSource?.close();
   eventSource = null;
+  sessionTransitioning = true;
+  setSessionButtonsDisabled(true);
   setBusy(elements.addSessionButton, true, "正在创建");
+  if (snapshot) updateProviderControls(snapshot, true);
   try {
-    snapshot = await api("/api/sessions/new", { method: "POST", body: "{}" });
+    const nextSnapshot = await api("/api/sessions/new", { method: "POST", body: "{}" });
+    const nextSharedSessions = await api("/api/sessions");
+    if (generation !== sessionGeneration) return;
+    snapshot = nextSnapshot;
+    sharedSessions = nextSharedSessions;
+    providerFormSessionId = null;
+    providerFormDirty = false;
     autoStarted = true;
     elements.currentSessionTab.disabled = false;
     showView("current");
+    renderSharedSessions(sharedSessions);
     render(snapshot);
     connectEvents();
     await startLogin();
+    synchronized = true;
+  } catch (error) {
+    if (generation === sessionGeneration) renderFatal(error.message);
   } finally {
-    setBusy(elements.addSessionButton, false, "添加视频号");
+    if (generation === sessionGeneration) {
+      sessionTransitioning = false;
+      setSessionButtonsDisabled(false);
+      setBusy(elements.addSessionButton, false, "添加视频号");
+      if (synchronized && snapshot) updateProviderControls(snapshot, true);
+      else void refresh();
+    }
   }
 }
 
@@ -184,6 +247,38 @@ async function toggleAutomation() {
     render(snapshot);
   } finally {
     setBusy(elements.automationButton, false, "");
+  }
+}
+
+async function saveReplyProvider() {
+  if (!snapshot || providerSaving || sessionTransitioning) return;
+  const generation = sessionGeneration;
+  const formSessionId = providerFormSessionId;
+  const provider = selectedProviderDraft();
+  if (!provider) return;
+  providerSaving = true;
+  updateProviderControls(snapshot);
+  elements.providerHint.textContent = "正在保存当前账号设置";
+  try {
+    const updatedSnapshot = await api("/api/session/reply-provider", {
+      method: "POST",
+      body: JSON.stringify({
+        provider,
+        jobNumber: elements.funnelJobNumberInput.value.trim(),
+      }),
+    });
+    if (
+      generation !== sessionGeneration
+      || formSessionId !== sharedSessions.selectedSessionId
+    ) return;
+    snapshot = updatedSnapshot;
+    providerFormDirty = false;
+    render(snapshot);
+  } catch (error) {
+    elements.providerHint.textContent = safeLabel(error.message);
+  } finally {
+    providerSaving = false;
+    if (snapshot) updateProviderControls(snapshot, true);
   }
 }
 
@@ -228,6 +323,7 @@ function connectEvents() {
     "snapshot",
     "auth.updated",
     "connection.updated",
+    "settings.updated",
     "inbound.received",
     "reply.updated",
   ]) {
@@ -255,21 +351,82 @@ function render(data) {
   elements.authBadge.className = `badge ${badgeClass(data.authState)}`;
   elements.connectionDot.className = `status-dot ${dotClass(data.authState)}`;
   elements.accountName.textContent = data.accountDisplayName || "尚未连接";
-  elements.modelStatus.textContent = data.service.modelConfigured
-    ? "模型凭证已配置"
-    : "尚未配置 ARK_API_KEY，自动回复保持关闭";
+  renderProviderSettings(data);
   elements.automationBadge.textContent = data.automationEnabled ? "运行中" : "已停止";
   elements.automationBadge.className = `badge ${data.automationEnabled ? "" : "muted"}`;
   elements.automationButton.textContent = data.automationEnabled ? "停止自动回复" : "恢复自动回复";
   elements.automationButton.disabled =
     !["active", "stopped"].includes(data.authState)
-    || !data.service.modelConfigured
+    || !data.service.selectedProviderConfigured
     || !data.service.autoReplyEnabled;
   elements.logoutButton.disabled = data.authState === "new";
   elements.sessionExpiry.textContent = "登录态：由视频号平台维持";
   renderQr(data);
   renderSources(data.sources);
   renderTimeline(data.timeline);
+}
+
+function renderProviderSettings(data) {
+  const activeSessionId = sharedSessions.selectedSessionId;
+  if (!providerFormDirty || providerFormSessionId !== activeSessionId) {
+    providerFormSessionId = activeSessionId;
+    providerFormDirty = false;
+    elements.chatProviderInput.checked = data.replyProvider !== "funnel";
+    elements.funnelProviderInput.checked = data.replyProvider === "funnel";
+    elements.funnelJobNumberInput.value = data.funnelJobNumber || "";
+  }
+  elements.providerLabel.textContent = providerLabel(data.replyProvider);
+  elements.modelStatus.textContent = data.service.selectedProviderConfigured
+    ? "当前方式已配置"
+    : "当前方式未配置";
+  updateProviderControls(data);
+}
+
+function updateProviderControls(data, preserveHint = false) {
+  const chatConfigured = data.service.chatReplyConfigured ?? data.service.modelConfigured ?? false;
+  const funnelConfigured = Boolean(data.service.funnelReplyConfigured);
+  const draftProvider = selectedProviderDraft();
+  const jobNumber = elements.funnelJobNumberInput.value.trim();
+
+  const controlsDisabled = providerSaving || sessionTransitioning;
+  elements.chatProviderInput.disabled = !chatConfigured || controlsDisabled;
+  elements.funnelProviderInput.disabled = !funnelConfigured || controlsDisabled;
+  elements.funnelProviderStatus.textContent = funnelConfigured ? "服务已配置" : "接口未配置";
+  elements.funnelJobNumberInput.disabled = draftProvider !== "funnel" || !funnelConfigured || controlsDisabled;
+  elements.funnelJobNumberInput.setAttribute(
+    "aria-invalid",
+    String(draftProvider === "funnel" && !jobNumber),
+  );
+
+  const draftConfigured = draftProvider === "funnel" ? funnelConfigured : chatConfigured;
+  const valid = Boolean(draftProvider)
+    && draftConfigured
+    && (draftProvider !== "funnel" || Boolean(jobNumber));
+  elements.saveReplyProviderButton.disabled = controlsDisabled || !providerFormDirty || !valid;
+  elements.saveReplyProviderButton.textContent = providerSaving ? "正在保存" : "保存回复方式";
+
+  if (preserveHint) return;
+  if (draftProvider === "funnel" && !funnelConfigured) {
+    elements.providerHint.textContent = "招聘接口未配置";
+  } else if (draftProvider === "funnel" && !jobNumber) {
+    elements.providerHint.textContent = "请填写招聘岗位号";
+  } else if (providerFormDirty) {
+    elements.providerHint.textContent = `保存后，新回复将使用${providerLabel(draftProvider)}`;
+  } else if (!data.service.selectedProviderConfigured) {
+    elements.providerHint.textContent = "当前回复方式未配置，自动回复保持关闭";
+  } else {
+    elements.providerHint.textContent = `当前账号使用${providerLabel(data.replyProvider)}`;
+  }
+}
+
+function selectedProviderDraft() {
+  if (elements.funnelProviderInput.checked) return "funnel";
+  if (elements.chatProviderInput.checked) return "chat-llm";
+  return null;
+}
+
+function providerLabel(provider) {
+  return provider === "funnel" ? "招聘接口" : "CHAT回复";
 }
 
 function renderSharedSessions(data) {
@@ -318,7 +475,9 @@ function showView(view) {
   elements.sessionSwitcherTab.classList.toggle("active", sessions);
   elements.sessionSwitcherTab.setAttribute("aria-selected", String(sessions));
   if (sessions) {
+    const generation = sessionGeneration;
     void api("/api/sessions").then((data) => {
+      if (generation !== sessionGeneration || sessionTransitioning) return;
       sharedSessions = data;
       renderSharedSessions(data);
     });
@@ -423,9 +582,11 @@ function renderReply(item) {
   const box = document.createElement("div");
   box.className = "reply-box";
   const title = document.createElement("small");
-  title.textContent = "CHAT回复";
+  title.textContent = "自动回复";
   const text = document.createElement("p");
-  text.textContent = item.replyText || "正在生成…";
+  text.textContent = item.replyState === "skipped"
+    ? "无需回复"
+    : item.replyText || "正在生成…";
   const state = document.createElement("span");
   state.className = `reply-state ${item.replyState}`;
   state.textContent = replyStateLabel(item.replyState, item.replyErrorCode);
@@ -440,6 +601,7 @@ function replyStateLabel(state, error) {
     generated: "准备发送",
     sending: "正在提交",
     confirmed: "平台已确认",
+    skipped: "无需回复",
     failed: "处理失败",
     submitted_unknown: "已提交，结果未知",
   };
@@ -489,6 +651,19 @@ function renderFatal(code) {
 
 elements.loginButton.addEventListener("click", () => void startLogin());
 elements.automationButton.addEventListener("click", () => void toggleAutomation());
+elements.chatProviderInput.addEventListener("change", () => {
+  providerFormDirty = true;
+  if (snapshot) updateProviderControls(snapshot);
+});
+elements.funnelProviderInput.addEventListener("change", () => {
+  providerFormDirty = true;
+  if (snapshot) updateProviderControls(snapshot);
+});
+elements.funnelJobNumberInput.addEventListener("input", () => {
+  providerFormDirty = true;
+  if (snapshot) updateProviderControls(snapshot);
+});
+elements.saveReplyProviderButton.addEventListener("click", () => void saveReplyProvider());
 elements.logoutButton.addEventListener("click", () => void logout());
 elements.currentSessionTab.addEventListener("click", () => showView("current"));
 elements.sessionSwitcherTab.addEventListener("click", () => showView("sessions"));

@@ -59,7 +59,14 @@ every reload and leave Certbot's renewal timer enabled.
   enabling the live comment reply test
 - call the configured Ark model with synthetic text and record only status,
   returned model identity, and request-ID presence
-- confirm `aidcp-cloud.service` and all `isales*` services remain active
+- from the DEV host, require `GET http://115.190.239.42:9093/public/health`
+  to return HTTP 200 before configuring `FUNNEL_BASE_URL`; record only status,
+  latency, remote IP, and `X-Request-Id`
+- save a known existing recruitment job number on one Demo account, switch it
+  to `招聘接口`, and verify comments and DMs hit only their respective upstream
+  endpoints without exposing the upstream host to the browser
+- confirm the AIDCP and `isales*` units retain their pre-deploy state and restart
+  counts; the standalone Demo release must not restart them
 
 Never print or copy `demo.env` into logs, OpenSpec evidence, or shell history.
 

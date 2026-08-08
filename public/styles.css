@@ -280,9 +280,9 @@ h2 {
 .button.danger { color: var(--red); }
 .button.danger.armed { color: #fff; background: var(--red); }
 
-.model-card {
+.provider-card {
   display: grid;
-  gap: 6px;
+  gap: 14px;
   margin: 26px 0 18px;
   padding: 20px;
   border-radius: 18px;
@@ -292,8 +292,76 @@ h2 {
     #08704a;
 }
 
-.model-card span, .model-card small { opacity: 0.72; font-size: 12px; }
-.model-card strong { font-size: 16px; overflow-wrap: anywhere; }
+.provider-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.provider-heading span, .provider-heading small { display: block; opacity: 0.76; font-size: 12px; }
+.provider-heading strong { display: block; margin-top: 4px; font-size: 17px; overflow-wrap: anywhere; }
+.provider-heading > small { padding-top: 2px; text-align: right; }
+
+.provider-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.provider-options legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.provider-option { position: relative; min-width: 0; cursor: pointer; }
+.provider-option input { position: absolute; opacity: 0; pointer-events: none; }
+.provider-option > span {
+  display: block;
+  min-height: 72px;
+  padding: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.09);
+  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+.provider-option strong, .provider-option small { display: block; }
+.provider-option strong { font-size: 13px; }
+.provider-option small { margin-top: 5px; opacity: 0.7; font-size: 10px; line-height: 1.45; }
+.provider-option input:checked + span { border-color: rgba(255, 255, 255, 0.92); background: rgba(255, 255, 255, 0.2); }
+.provider-option input:focus-visible + span { outline: 3px solid rgba(255, 255, 255, 0.32); outline-offset: 2px; }
+.provider-option input:disabled + span { cursor: not-allowed; opacity: 0.46; }
+
+.provider-job { display: grid; gap: 7px; }
+.provider-job label { opacity: 0.78; font-size: 11px; font-weight: 700; }
+.provider-job input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 11px;
+  outline: 0;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+}
+.provider-job input::placeholder { color: rgba(255, 255, 255, 0.52); }
+.provider-job input:focus { border-color: rgba(255, 255, 255, 0.8); box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12); }
+.provider-job input[aria-invalid="true"]:not(:disabled) { border-color: #ffd49b; }
+.provider-job input:disabled { opacity: 0.52; cursor: not-allowed; }
+
+.provider-save-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.provider-save-row p { margin: 0; opacity: 0.76; font-size: 10px; line-height: 1.5; }
+.button.provider-save { width: auto; padding: 9px 13px; color: var(--green-deep); background: #fff; font-size: 11px; }
 
 .source-list {
   overflow: hidden;
@@ -343,9 +411,10 @@ h2 {
 .item-text { margin: 0; font-size: 14px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reply-box { margin-top: 12px; padding: 12px 14px; border-left: 3px solid var(--green); border-radius: 4px 12px 12px 4px; background: var(--green-soft); }
 .reply-box small { display: block; margin-bottom: 5px; color: var(--green-deep); font-weight: 700; }
-.reply-box p { margin: 0; font-size: 13px; line-height: 1.65; }
+.reply-box p { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reply-state { display: inline-flex; margin-top: 8px; padding: 4px 8px; border-radius: 999px; color: var(--muted); background: #edf0ee; font-size: 10px; font-weight: 700; }
 .reply-state.confirmed { color: var(--green-deep); background: #d9f3e6; }
+.reply-state.skipped { color: #735315; background: #fff0cb; }
 .reply-state.failed, .reply-state.submitted_unknown { color: #923737; background: #fce5e5; }
 
 footer {
@@ -365,4 +434,12 @@ footer {
   .dashboard { grid-template-columns: 1fr; }
   .actions { grid-template-columns: 1fr; }
   footer { display: grid; }
+}
+
+@media (max-width: 480px) {
+  .provider-heading, .provider-save-row { grid-template-columns: 1fr; }
+  .provider-heading { display: grid; }
+  .provider-heading > small { text-align: left; }
+  .provider-options { grid-template-columns: 1fr; }
+  .button.provider-save { width: 100%; }
 }

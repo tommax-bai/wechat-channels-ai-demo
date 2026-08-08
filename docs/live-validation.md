@@ -11,6 +11,8 @@ Run these stages in order against an explicitly selected Demo account. Stop at t
 - [ ] `SESSION_ENCRYPTION_KEY` is unique to this deployment and is not logged or committed.
 - [ ] `ARK_API_KEY` belongs to the Demo environment.
 - [ ] The exact `ARK_MODEL` is accepted by that key; `ModelNotOpen` is shown as failure and no other model is substituted.
+- [ ] `FUNNEL_BASE_URL` is configured only on the allowlisted DEV backend, and its `/public/health` returns HTTP 200 from that host.
+- [ ] A known existing recruitment `job_number` is saved on the test account before selecting `招聘接口`.
 - [ ] The operator confirms the customer-facing private-interface and credential-custody notice.
 
 ## 2. QR authentication and bounded context capture
@@ -54,6 +56,10 @@ This stage requires a separately approved disposable direct-message conversation
 - [ ] Repeat once for a top-level comment and require a non-empty returned `commentId`.
 - [ ] Read back the comment and verify it is visible under the exact parent.
 - [ ] Repeat once for a disposable second-level comment and verify the reply is attached to that exact comment.
+- [ ] With `招聘接口` selected, verify a comment calls only `/job/comment-reply/{job_number}` and an empty `reply` is displayed as `无需回复` with no platform write.
+- [ ] With `招聘接口` selected, verify a DM calls only `/agent/b2c/chat`, uses a stable message id, and sends `content_list` items as separate bubbles in order.
+- [ ] Verify a returned `send_wechat_qr` or `escalate_to_human` action fails before any text is sent until that action has a real implementation.
+- [ ] Switch the account back to `CHAT回复` and verify subsequent inputs use CHAT without calling the recruitment provider.
 - [ ] Simulate a send timeout and confirm the job becomes `submitted_unknown` with no automatic retry.
 - [ ] Stop or log out while generation is in progress and confirm a not-yet-dispatched request never reaches the platform.
 - [ ] Refresh the QR and request logout while a dispatched send is awaiting its receipt; both mutations must return `platform_send_in_flight`, and the terminal receipt must remain visible before retrying.

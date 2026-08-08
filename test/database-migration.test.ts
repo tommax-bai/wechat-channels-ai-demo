@@ -45,18 +45,23 @@ describe("authenticated session persistence migration", () => {
     database = openDatabase(path);
     const migrated = database.prepare(`
       SELECT platform_persistent AS persistent, expires_at AS expiresAt,
-             account_key_hash AS accountKeyHash
+             account_key_hash AS accountKeyHash, reply_provider AS replyProvider,
+             funnel_job_number AS funnelJobNumber
       FROM demo_sessions WHERE id = 'existing'
     `).get() as {
       persistent: number;
       expiresAt: number;
       accountKeyHash: string;
+      replyProvider: string;
+      funnelJobNumber: string | null;
     };
 
     expect(migrated).toEqual({
       persistent: 1,
       expiresAt: ROLLBACK_SAFE_PLATFORM_EXPIRY_MS,
       accountKeyHash: "account-hash",
+      replyProvider: "chat-llm",
+      funnelJobNumber: null,
     });
   });
 });

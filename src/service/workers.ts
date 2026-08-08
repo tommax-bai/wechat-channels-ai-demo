@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.js";
 import type { SecureStore } from "../crypto.js";
-import type { ReplyModel } from "../model/reply-model.js";
+import type { ReplyModelRegistry } from "../model/reply-model.js";
 import { ModelError } from "../model/reply-model.js";
 import type {
   DemoRepository,
@@ -40,7 +40,7 @@ export class WorkerCoordinator {
     private readonly repository: DemoRepository,
     private readonly secureStore: SecureStore,
     private readonly wechat: WechatGateway,
-    private readonly model: ReplyModel,
+    private readonly models: ReplyModelRegistry,
     private readonly log: Pick<Console, "info" | "warn" | "error"> = console,
   ) {}
 
@@ -424,7 +424,8 @@ export class WorkerCoordinator {
   private async processReply(job: ReplyRow): Promise<void> {
     const inbound = this.repository.getInbound(job.inboundItemId, job.sessionId);
     const stored = this.readCredential(job.sessionId);
-    if (!inbound || stored?.kind !== "session") {
+    const generationSession = this.repository.getSession(job.sessionId);
+    if (!inbound || stored?.kind !== "session" || !generationSession) {
       this.repository.updateReply(
         job.id,
         job.sessionId,
@@ -440,18 +441,47 @@ export class WorkerCoordinator {
       `inbound:${inbound.id}`,
     );
     let generated: ReplyModelResult;
+    let messages: string[];
     try {
-      generated = await this.model.generate({
+      const model = this.models[generationSession.replyProvider];
+      generated = await model.generate({
         source: item.source,
         authorName: item.authorName,
         text: item.text,
+        ...(generationSession.funnelJobNumber
+          ? { jobNumber: generationSession.funnelJobNumber }
+          : {}),
+        ...(item.source === "dm" ? {
+          conversationId: `wechat-channels-${this.secureStore.keyedHash(
+            `${job.sessionId}\0${generationSession.funnelJobNumber ?? ""}\0${item.target.kind === "dm" ? item.target.sessionId : item.authorId}`,
+            "funnel-conversation",
+          )}`,
+          messageId: `wechat-channels-${this.secureStore.keyedHash(
+            `${job.sessionId}\0${generationSession.funnelJobNumber ?? ""}\0${item.externalId}`,
+            "funnel-message",
+          )}`,
+        } : {}),
       });
+      messages = generated.disposition === "skip"
+        ? []
+        : generated.messages ?? [generated.text];
+      if (messages.some((message) => !message.trim())) {
+        throw new ModelError("model_invalid_reply_messages");
+      }
+      if (item.source === "comment" && messages.length > 1) {
+        throw new ModelError("model_invalid_comment_messages");
+      }
     } catch (error) {
       this.repository.updateReply(
         job.id,
         job.sessionId,
         "failed",
-        { errorCode: error instanceof ModelError ? error.code : "model_error" },
+        {
+          errorCode: error instanceof ModelError ? error.code : "model_error",
+          ...(error instanceof ModelError && error.requestId
+            ? { providerRequestId: error.requestId }
+            : {}),
+        },
         Date.now(),
       );
       return;
@@ -461,6 +491,21 @@ export class WorkerCoordinator {
       job.sessionId,
       `reply:${job.id}`,
     );
+    if (messages.length === 0) {
+      this.repository.updateReply(
+        job.id,
+        job.sessionId,
+        "skipped",
+        {
+          outputEnvelope,
+          model: generated.model,
+          providerRequestId: generated.requestId ?? null,
+          errorCode: null,
+        },
+        Date.now(),
+      );
+      return;
+    }
     this.repository.updateReply(
       job.id,
       job.sessionId,
@@ -505,65 +550,81 @@ export class WorkerCoordinator {
         );
         return;
       }
-      let result: WechatSendResult;
-      try {
-        result = await this.wechat.sendReply(
-          freshStored.value,
-          item.target,
-          generated.text,
-          job.platformClientId,
-          () => this.repository.isSendAuthorized(
+      const receipts: string[] = [];
+      for (const [index, text] of messages.entries()) {
+        let result: WechatSendResult;
+        try {
+          result = await this.wechat.sendReply(
+            freshStored.value,
+            item.target,
+            text,
+            index === 0 ? job.platformClientId : `${job.platformClientId}-${index + 1}`,
+            () => this.repository.isSendAuthorized(
+              job.id,
+              job.sessionId,
+              dispatchSession.authGeneration,
+              job.runGeneration,
+              Date.now(),
+            ),
+          );
+        } catch (error) {
+          const ambiguous = error instanceof WechatApiError && error.ambiguous;
+          const code = safeErrorCode(error);
+          const recorded = this.repository.updateReply(
             job.id,
             job.sessionId,
-            dispatchSession.authGeneration,
-            job.runGeneration,
-            Date.now(),
-          ),
-        );
-      } catch (error) {
-        const ambiguous = error instanceof WechatApiError && error.ambiguous;
-        const code = safeErrorCode(error);
-        const recorded = this.repository.updateReply(
-          job.id,
-          job.sessionId,
-          ambiguous ? "submitted_unknown" : "failed",
-          { errorCode: code },
-          Date.now(),
-        );
-        if (!recorded) {
-          this.log.error("[demo] platform send outcome could not be persisted");
-          return;
-        }
-        this.savePlatformSessionSafely(
-          job.sessionId,
-          dispatchSession.authGeneration,
-          freshStored.value,
-        );
-        if (!ambiguous && code === "auth_required") {
-          this.repository.setAuthStateIfGeneration(
-            job.sessionId,
-            dispatchSession.authGeneration,
-            "auth_required",
-            code,
+            receipts.length > 0 || ambiguous ? "submitted_unknown" : "failed",
+            { errorCode: code },
             Date.now(),
           );
+          if (!recorded) {
+            this.log.error("[demo] platform send outcome could not be persisted");
+            return;
+          }
+          this.savePlatformSessionSafely(
+            job.sessionId,
+            dispatchSession.authGeneration,
+            freshStored.value,
+          );
+          if (!ambiguous && code === "auth_required") {
+            this.repository.setAuthStateIfGeneration(
+              job.sessionId,
+              dispatchSession.authGeneration,
+              "auth_required",
+              code,
+              Date.now(),
+            );
+          }
+          return;
         }
-        return;
+        if (!result.accepted || !result.externalId) {
+          this.repository.updateReply(
+            job.id,
+            job.sessionId,
+            receipts.length > 0 ? "submitted_unknown" : "failed",
+            { errorCode: "platform_ack_missing" },
+            Date.now(),
+          );
+          this.savePlatformSessionSafely(
+            job.sessionId,
+            dispatchSession.authGeneration,
+            freshStored.value,
+          );
+          return;
+        }
+        receipts.push(result.externalId);
       }
-      const confirmed = result.accepted && result.externalId;
       try {
         const recorded = this.repository.updateReply(
           job.id,
           job.sessionId,
-          confirmed ? "confirmed" : "failed",
+          "confirmed",
           {
-            errorCode: confirmed ? null : "platform_ack_missing",
-            ...(confirmed ? {
-              platformReceiptHash: this.secureStore.keyedHash(
-                result.externalId as string,
-                `platform-receipt:${job.sessionId}`,
-              ),
-            } : {}),
+            errorCode: null,
+            platformReceiptHash: this.secureStore.keyedHash(
+              JSON.stringify(receipts),
+              `platform-receipt:${job.sessionId}`,
+            ),
           },
           Date.now(),
         );

@@ -3,6 +3,7 @@ import { CookieJar } from "tough-cookie";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SecureStore } from "../src/crypto.js";
 import { openDatabase, type SqliteDatabase } from "../src/database.js";
+import { ModelError } from "../src/model/reply-model.js";
 import { DemoRepository } from "../src/repository.js";
 import { buildServer } from "../src/server.js";
 import { SessionService } from "../src/service/session-service.js";
@@ -13,6 +14,7 @@ import { WechatApiError } from "../src/wechat/transport.js";
 import {
   FakeReplyModel,
   FakeWechatGateway,
+  fakeComment,
   fakeDm,
   testConfig,
 } from "./helpers.js";
@@ -24,6 +26,7 @@ describe("multi-user demo flow", () => {
   let secureStore: SecureStore;
   let gateway: FakeWechatGateway;
   let model: FakeReplyModel;
+  let funnelModel: FakeReplyModel;
   let workers: WorkerCoordinator;
 
   beforeEach(async () => {
@@ -33,8 +36,15 @@ describe("multi-user demo flow", () => {
     secureStore = new SecureStore(config.encryptionKey);
     gateway = new FakeWechatGateway();
     model = new FakeReplyModel();
+    funnelModel = new FakeReplyModel();
     const sessions = new SessionService(config, repository, secureStore, gateway);
-    workers = new WorkerCoordinator(config, repository, secureStore, gateway, model);
+    workers = new WorkerCoordinator(
+      config,
+      repository,
+      secureStore,
+      gateway,
+      { "chat-llm": model, funnel: funnelModel },
+    );
     app = await buildServer({ config, repository, sessions });
   });
 
@@ -307,6 +317,316 @@ describe("multi-user demo flow", () => {
     expect(invalidList.statusCode).toBe(200);
     expect(invalidList.json<{ selectedSessionId: string | null }>().selectedSessionId)
       .toBeNull();
+  });
+
+  it("admits and persists an account-scoped reply provider setting", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    const missingJob = await server.inject({
+      method: "POST",
+      url: "/api/session/reply-provider",
+      headers: { cookie: visitor.cookie, origin: "http://localhost:4310" },
+      payload: { provider: "funnel", jobNumber: "   " },
+    });
+    expect(missingJob.statusCode).toBe(400);
+    expect(missingJob.json()).toEqual({ error: "funnel_job_number_required" });
+
+    const unavailable = await server.inject({
+      method: "POST",
+      url: "/api/session/reply-provider",
+      headers: { cookie: visitor.cookie, origin: "http://localhost:4310" },
+      payload: { provider: "funnel", jobNumber: "job-42" },
+    });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toEqual({ error: "funnel_provider_unavailable" });
+    expect((await snapshot(server, visitor.cookie)).replyProvider).toBe("chat-llm");
+
+    await server.close();
+    app = undefined;
+    const configured = testConfig({
+      funnelBaseUrl: "http://funnel.example.test",
+      funnelTimeoutMs: 1_000,
+    });
+    const sessions = new SessionService(
+      configured,
+      repository,
+      secureStore,
+      gateway,
+    );
+    app = await buildServer({ config: configured, repository, sessions });
+    const configuredServer = requireApp(app);
+    const selected = await configuredServer.inject({
+      method: "POST",
+      url: "/api/session/reply-provider",
+      headers: { cookie: visitor.cookie, origin: "http://localhost:4310" },
+      payload: { provider: "funnel", jobNumber: "  job-42  " },
+    });
+    expect(selected.statusCode).toBe(200);
+    expect(selected.json<SessionSnapshot>()).toMatchObject({
+      replyProvider: "funnel",
+      funnelJobNumber: "job-42",
+      automationEnabled: true,
+      service: {
+        autoReplyEnabled: true,
+        modelConfigured: true,
+        chatReplyConfigured: true,
+        funnelReplyConfigured: true,
+        selectedProviderConfigured: true,
+      },
+    });
+    expect(await snapshot(configuredServer, visitor.cookie)).toMatchObject({
+      replyProvider: "funnel",
+      funnelJobNumber: "job-42",
+    });
+
+    const listed = await configuredServer.inject({
+      method: "GET",
+      url: "/api/sessions",
+      headers: { cookie: visitor.cookie },
+    });
+    expect(listed.json<{ sessions: Array<Record<string, unknown>> }>().sessions[0])
+      .toMatchObject({ replyProvider: "funnel", funnelJobNumber: "job-42" });
+
+    const backToChat = await configuredServer.inject({
+      method: "POST",
+      url: "/api/session/reply-provider",
+      headers: { cookie: visitor.cookie, origin: "http://localhost:4310" },
+      payload: { provider: "chat-llm" },
+    });
+    expect(backToChat.json<SessionSnapshot>()).toMatchObject({
+      replyProvider: "chat-llm",
+      funnelJobNumber: "job-42",
+    });
+  });
+
+  it("uses the selected funnel provider and sends DM bubbles in order", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    const sessionId = requireSessionId(database);
+    repository.setReplyProvider(sessionId, "funnel", "job-42", Date.now());
+    funnelModel.result = {
+      text: "第一条\n第二条",
+      messages: ["第一条", "第二条"],
+      disposition: "reply",
+      model: "funnel",
+      requestId: "funnel-request-1",
+    };
+    const firstDm = fakeDm("funnel-dm-1", "finder-1", "多少钱");
+    if (firstDm.target.kind === "dm") firstDm.target.sessionId = "stable-platform-session";
+    gateway.newItems.set("finder-1", [firstDm]);
+
+    await workers.runOnce();
+
+    expect(model.calls).toHaveLength(0);
+    expect(funnelModel.calls).toHaveLength(1);
+    expect(funnelModel.calls[0]).toMatchObject({
+      source: "dm",
+      text: "多少钱",
+      jobNumber: "job-42",
+    });
+    expect(funnelModel.calls[0]?.conversationId).toMatch(/^wechat-channels-/);
+    expect(funnelModel.calls[0]?.conversationId).not.toContain("session-funnel-dm-1");
+    expect(funnelModel.calls[0]?.messageId).toMatch(/^wechat-channels-/);
+    expect(funnelModel.calls[0]?.messageId).not.toContain("funnel-dm-1");
+    expect(gateway.sends.map((send) => send.text)).toEqual(["第一条", "第二条"]);
+    expect(new Set(gateway.sends.map((send) => send.clientId)).size).toBe(2);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "多少钱")).toMatchObject({
+        replyText: "第一条\n第二条",
+        replyState: "confirmed",
+      });
+
+    const firstConversationId = funnelModel.calls[0]?.conversationId;
+    repository.setReplyProvider(sessionId, "funnel", "job-99", Date.now());
+    funnelModel.result = {
+      text: "新岗位回复",
+      messages: ["新岗位回复"],
+      disposition: "reply",
+      model: "funnel",
+    };
+    const secondDm = fakeDm("funnel-dm-2", "finder-1", "还是这个岗位吗");
+    if (secondDm.target.kind === "dm") secondDm.target.sessionId = "stable-platform-session";
+    gateway.newItems.set("finder-1", [secondDm]);
+    await workers.runOnce();
+    expect(funnelModel.calls[1]).toMatchObject({ jobNumber: "job-99" });
+    expect(funnelModel.calls[1]?.conversationId).not.toBe(firstConversationId);
+  });
+
+  it("records an empty funnel comment reply as skipped without a platform write", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    repository.setReplyProvider(
+      requireSessionId(database),
+      "funnel",
+      "job-42",
+      Date.now(),
+    );
+    funnelModel.result = {
+      text: "",
+      messages: [],
+      disposition: "skip",
+      model: "funnel",
+    };
+    gateway.newComments.set("finder-1", [
+      fakeComment("comment-skip-1", "哈哈哈哈"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(model.calls).toHaveLength(0);
+    expect(funnelModel.calls).toHaveLength(1);
+    expect(funnelModel.calls[0]).toMatchObject({
+      source: "comment",
+      text: "哈哈哈哈",
+      jobNumber: "job-42",
+    });
+    expect(gateway.sends).toHaveLength(0);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "哈哈哈哈")).toMatchObject({
+        replyText: "",
+        replyState: "skipped",
+      });
+  });
+
+  it("does not fall back to CHAT when funnel generation fails", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    repository.setReplyProvider(
+      requireSessionId(database),
+      "funnel",
+      "job-42",
+      Date.now(),
+    );
+    funnelModel.error = new ModelError(
+      "funnel_test_failure",
+      "funnel-failed-request",
+    );
+    gateway.newItems.set("finder-1", [
+      fakeDm("funnel-failure-1", "finder-1", "测试失败"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(funnelModel.calls).toHaveLength(1);
+    expect(model.calls).toHaveLength(0);
+    expect(gateway.sends).toHaveLength(0);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "测试失败")).toMatchObject({
+        replyState: "failed",
+        replyErrorCode: "funnel_test_failure",
+      });
+    expect(database?.prepare(`
+      SELECT provider_request_id AS requestId
+      FROM reply_jobs WHERE error_code = 'funnel_test_failure'
+    `).get()).toEqual({ requestId: "funnel-failed-request" });
+  });
+
+  it("stops persisted automation when the selected provider is unavailable after restart", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    const sessionId = requireSessionId(database);
+    repository.setReplyProvider(sessionId, "funnel", "job-42", Date.now());
+    const session = repository.getSession(sessionId);
+    if (!session) throw new Error("missing test session");
+    expect(session.automationEnabled).toBe(true);
+    const queuedItem = fakeDm("queued-before-provider-restart", "finder-1", "仍在排队");
+    const inboundId = "queued-before-provider-restart-inbound";
+    repository.insertInbound({
+      id: inboundId,
+      sessionId,
+      source: "dm",
+      externalIdHash: secureStore.keyedHash(
+        queuedItem.externalId,
+        `inbound:${sessionId}:dm`,
+      ),
+      payloadEnvelope: secureStore.encryptJson(
+        queuedItem,
+        sessionId,
+        `inbound:${inboundId}`,
+      ),
+      occurredAt: queuedItem.occurredAt,
+      discoveredAt: Date.now(),
+      historical: false,
+      replyEligible: true,
+      authGeneration: session.authGeneration,
+      runGeneration: session.runGeneration,
+      platformClientId: "queued-before-provider-restart-client",
+    });
+    expect(database?.prepare(
+      "SELECT state FROM reply_jobs WHERE inbound_item_id = ?",
+    ).get(inboundId)).toEqual({ state: "queued" });
+
+    const restarted = new SessionService(
+      testConfig(),
+      repository,
+      secureStore,
+      gateway,
+    );
+    expect(restarted.reconcileProviderAvailability()).toBe(1);
+
+    expect(await snapshot(server, visitor.cookie)).toMatchObject({
+      authState: "stopped",
+      automationEnabled: false,
+      replyProvider: "funnel",
+      funnelJobNumber: "job-42",
+      service: { selectedProviderConfigured: false },
+    });
+    expect(database?.prepare(`
+      SELECT state, error_code AS errorCode
+      FROM reply_jobs WHERE inbound_item_id = ?
+    `).get(inboundId)).toEqual({
+      state: "failed",
+      errorCode: "provider_unavailable_on_restart",
+    });
+  });
+
+  it("does not replay a multi-bubble reply after a partial send failure", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    repository.setReplyProvider(
+      requireSessionId(database),
+      "funnel",
+      "job-42",
+      Date.now(),
+    );
+    funnelModel.result = {
+      text: "第一条\n第二条",
+      messages: ["第一条", "第二条"],
+      disposition: "reply",
+      model: "funnel",
+    };
+    gateway.sendErrors = [
+      null,
+      new WechatApiError("second_bubble_rejected", "dmSendText", false),
+    ];
+    gateway.newItems.set("finder-1", [
+      fakeDm("funnel-partial-1", "finder-1", "分两条回复"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(gateway.sends.map((send) => send.text)).toEqual(["第一条", "第二条"]);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "分两条回复")).toMatchObject({
+        replyState: "submitted_unknown",
+        replyErrorCode: "second_bubble_rejected",
+      });
+    await workers.runOnce();
+    expect(gateway.sends).toHaveLength(2);
+    expect(funnelModel.calls).toHaveLength(1);
   });
 
   it("does not retry an irreversible send with an ambiguous outcome", async () => {

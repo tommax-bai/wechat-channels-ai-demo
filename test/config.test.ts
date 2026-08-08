@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, safeStartupSummary } from "../src/config.js";
 
 const baseEnv: NodeJS.ProcessEnv = {
   SESSION_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
@@ -47,5 +47,29 @@ describe("session cookie security", () => {
 
     expect(config.pendingSessionTtlMs).toBe(28_800_000);
     expect(config.sessionCookieMaxAgeSeconds).toBe(31_536_000);
+  });
+});
+
+describe("reply provider configuration", () => {
+  it("keeps the funnel provider optional with a bounded timeout default", () => {
+    const config = loadConfig(baseEnv);
+
+    expect(config.funnelBaseUrl).toBeUndefined();
+    expect(config.funnelTimeoutMs).toBe(45_000);
+  });
+
+  it("normalizes the server-only funnel URL without exposing it in startup logs", () => {
+    const config = loadConfig({
+      ...baseEnv,
+      FUNNEL_BASE_URL: "http://115.190.239.42:9093///",
+      FUNNEL_TIMEOUT_MS: "7000",
+    });
+    const summary = safeStartupSummary(config);
+
+    expect(config.funnelBaseUrl).toBe("http://115.190.239.42:9093");
+    expect(config.funnelTimeoutMs).toBe(7_000);
+    expect(summary).toMatchObject({ funnelReplyConfigured: true });
+    expect(JSON.stringify(summary)).not.toContain("115.190.239.42");
+    expect(summary).not.toHaveProperty("model");
   });
 });

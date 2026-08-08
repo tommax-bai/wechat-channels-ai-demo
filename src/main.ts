@@ -3,7 +3,8 @@ import { loadConfig, safeStartupSummary } from "./config.js";
 import { SecureStore } from "./crypto.js";
 import { openDatabase } from "./database.js";
 import { ArkReplyModel } from "./model/ark.js";
-import type { ReplyModel } from "./model/reply-model.js";
+import { FunnelReplyModel } from "./model/funnel.js";
+import type { ReplyModelRegistry } from "./model/reply-model.js";
 import { UnavailableReplyModel } from "./model/unavailable.js";
 import { DemoRepository } from "./repository.js";
 import { buildServer } from "./server.js";
@@ -31,21 +32,32 @@ const sessionCapturer = config.wechatBrowserExecutablePath
     })
   : undefined;
 const wechat = new PrivateWechatGateway(transport, sessionCapturer);
-const model: ReplyModel = config.arkApiKey
-  ? new ArkReplyModel({
-      apiKey: config.arkApiKey,
-      baseUrl: config.arkBaseUrl,
-      model: config.arkModel,
-      timeoutMs: config.arkTimeoutMs,
-    })
-  : new UnavailableReplyModel();
+const models: ReplyModelRegistry = {
+  "chat-llm": config.arkApiKey
+    ? new ArkReplyModel({
+        apiKey: config.arkApiKey,
+        baseUrl: config.arkBaseUrl,
+        model: config.arkModel,
+        timeoutMs: config.arkTimeoutMs,
+        maxResponseBytes: config.maxResponseBytes,
+      })
+    : new UnavailableReplyModel("ark_api_key_missing"),
+  funnel: config.funnelBaseUrl
+    ? new FunnelReplyModel({
+        baseUrl: config.funnelBaseUrl,
+        timeoutMs: config.funnelTimeoutMs,
+        maxResponseBytes: config.maxResponseBytes,
+      })
+    : new UnavailableReplyModel("funnel_provider_unavailable"),
+};
 const sessions = new SessionService(config, repository, secureStore, wechat);
+sessions.reconcileProviderAvailability();
 const workers = new WorkerCoordinator(
   config,
   repository,
   secureStore,
   wechat,
-  model,
+  models,
 );
 const app = await buildServer({ config, repository, sessions });
 

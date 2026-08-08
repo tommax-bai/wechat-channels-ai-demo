@@ -26,6 +26,10 @@ export interface ServerDependencies {
 }
 
 const automationBody = z.object({ enabled: z.boolean() }).strict();
+const replyProviderBody = z.object({
+  provider: z.enum(["chat-llm", "funnel"]),
+  jobNumber: z.string().max(128).optional(),
+}).strict();
 const selectSessionBody = z.object({
   sessionId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
 }).strict();
@@ -74,6 +78,8 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   app.get("/readyz", async () => ({
     status: "ready",
     modelConfigured: Boolean(deps.config.arkApiKey),
+    chatReplyConfigured: Boolean(deps.config.arkApiKey),
+    funnelReplyConfigured: Boolean(deps.config.funnelBaseUrl),
     autoReplyEnabled: deps.config.autoReplyEnabled,
     commentCaptureConfigured: Boolean(
       deps.config.wechatBrowserExecutablePath,
@@ -153,6 +159,18 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     const session = requireSession(request, reply, deps);
     const body = automationBody.parse(request.body);
     const updated = deps.sessions.setAutomation(session, body.enabled);
+    return deps.sessions.snapshot(updated);
+  });
+
+  app.post("/api/session/reply-provider", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    const session = requireSession(request, reply, deps);
+    const body = replyProviderBody.parse(request.body);
+    const updated = deps.sessions.setReplyProvider(
+      session,
+      body.provider,
+      body.jobNumber,
+    );
     return deps.sessions.snapshot(updated);
   });
 
@@ -325,6 +343,7 @@ function statusFor(code: string): number {
   if (code === "platform_send_in_flight") return 409;
   if (code === "active_session_limit_reached") return 503;
   if (code === "shared_session_unavailable") return 404;
-  if (code === "invalid_request") return 400;
+  if (code === "invalid_request" || code === "funnel_job_number_required") return 400;
+  if (code === "funnel_provider_unavailable") return 503;
   return 502;
 }

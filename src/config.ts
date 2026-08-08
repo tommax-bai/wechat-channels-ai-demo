@@ -6,6 +6,11 @@ const booleanString = z
   .enum(["0", "1", "true", "false"])
   .transform((value) => value === "1" || value === "true");
 
+const optionalUrlString = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.string().url().optional(),
+);
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().default("127.0.0.1"),
@@ -36,6 +41,8 @@ const schema = z.object({
   ARK_BASE_URL: z.string().url().default("https://ark.cn-beijing.volces.com/api/v3"),
   ARK_MODEL: z.string().min(1).default("doubao-seed-character-260628"),
   ARK_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(45_000),
+  FUNNEL_BASE_URL: optionalUrlString,
+  FUNNEL_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(45_000),
 });
 
 export type AppConfig = Readonly<{
@@ -67,6 +74,8 @@ export type AppConfig = Readonly<{
   arkBaseUrl: string;
   arkModel: string;
   arkTimeoutMs: number;
+  funnelBaseUrl?: string;
+  funnelTimeoutMs: number;
 }>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -117,6 +126,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     arkBaseUrl: parsed.ARK_BASE_URL.replace(/\/+$/, ""),
     arkModel: parsed.ARK_MODEL,
     arkTimeoutMs: parsed.ARK_TIMEOUT_MS,
+    ...(parsed.FUNNEL_BASE_URL
+      ? { funnelBaseUrl: parsed.FUNNEL_BASE_URL.replace(/\/+$/, "") }
+      : {}),
+    funnelTimeoutMs: parsed.FUNNEL_TIMEOUT_MS,
   };
 }
 
@@ -144,7 +157,8 @@ export function safeStartupSummary(config: AppConfig): Record<string, unknown> {
     autoReplyEnabled: config.autoReplyEnabled,
     workerConcurrency: config.workerConcurrency,
     modelConfigured: Boolean(config.arkApiKey),
-    model: config.arkModel,
+    chatReplyConfigured: Boolean(config.arkApiKey),
+    funnelReplyConfigured: Boolean(config.funnelBaseUrl),
     wechatBaseHost: new URL(config.wechatBaseUrl).host,
     commentCaptureConfigured: Boolean(config.wechatBrowserExecutablePath),
     commentCaptureHeadless: config.wechatBrowserHeadless,

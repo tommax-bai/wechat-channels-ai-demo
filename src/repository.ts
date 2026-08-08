@@ -6,6 +6,7 @@ import {
 import type {
   AuthState,
   InboundSource,
+  ReplyProvider,
   ReplyState,
   SourceState,
 } from "./types.js";
@@ -18,6 +19,8 @@ export interface SessionRow {
   platformPersistent: boolean;
   authState: AuthState;
   automationEnabled: boolean;
+  replyProvider: ReplyProvider;
+  funnelJobNumber: string | null;
   authGeneration: number;
   runGeneration: number;
   accountKeyHash: string | null;
@@ -70,6 +73,8 @@ interface RawSession {
   platform_persistent: number;
   auth_state: AuthState;
   automation_enabled: number;
+  reply_provider: ReplyProvider;
+  funnel_job_number: string | null;
   auth_generation: number;
   run_generation: number;
   account_key_hash: string | null;
@@ -307,6 +312,60 @@ export class DemoRepository {
       `)
       .run(enabled ? 1 : 0, targetState, targetState, targetState, now, id);
     if (result.changes > 0) this.appendEvent(id, "connection.updated", null, now);
+    return this.getSession(id);
+  }
+
+  stopAutomationForUnavailableProvider(id: string, now: number): SessionRow | null {
+    return this.db.transaction(() => {
+      const current = this.db
+        .prepare("SELECT automation_enabled FROM demo_sessions WHERE id = ?")
+        .get(id) as { automation_enabled: number } | undefined;
+      if (!current || current.automation_enabled !== 1) return this.getSession(id);
+
+      const queued = this.db
+        .prepare("SELECT id FROM reply_jobs WHERE session_id = ? AND state = 'queued'")
+        .all(id) as Array<{ id: string }>;
+      this.db
+        .prepare(`
+          UPDATE reply_jobs
+          SET state = 'failed', error_code = 'provider_unavailable_on_restart', updated_at = ?
+          WHERE session_id = ? AND state = 'queued'
+        `)
+        .run(now, id);
+      this.db
+        .prepare(`
+          UPDATE demo_sessions
+          SET automation_enabled = 0, run_generation = run_generation + 1,
+              auth_state = CASE
+                WHEN auth_state IN ('active', 'baseline_sync') THEN 'stopped'
+                ELSE auth_state
+              END,
+              updated_at = ?
+          WHERE id = ? AND automation_enabled = 1
+        `)
+        .run(now, id);
+      for (const reply of queued) {
+        this.appendEvent(id, "reply.updated", reply.id, now);
+      }
+      this.appendEvent(id, "connection.updated", null, now);
+      return this.getSession(id);
+    })();
+  }
+
+  setReplyProvider(
+    id: string,
+    provider: ReplyProvider,
+    funnelJobNumber: string | null,
+    now: number,
+  ): SessionRow | null {
+    const result = this.db
+      .prepare(`
+        UPDATE demo_sessions
+        SET reply_provider = ?, funnel_job_number = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(provider, funnelJobNumber, now, id);
+    if (result.changes > 0) this.appendEvent(id, "settings.updated", null, now);
     return this.getSession(id);
   }
 
@@ -758,6 +817,8 @@ function mapSession(row: RawSession): SessionRow {
     platformPersistent: row.platform_persistent === 1,
     authState: row.auth_state,
     automationEnabled: row.automation_enabled === 1,
+    replyProvider: row.reply_provider,
+    funnelJobNumber: row.funnel_job_number,
     authGeneration: row.auth_generation,
     runGeneration: row.run_generation,
     accountKeyHash: row.account_key_hash,

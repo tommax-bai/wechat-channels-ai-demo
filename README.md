@@ -6,7 +6,7 @@
 - 不启动 Chrome、AdsPower、Electron 或其他浏览器内核；
 - 客户打开网页后，通过纯 HTTP 视频号二维码登录；
 - 历史私信和评论只展示并建立基线；
-- 基线完成后，新收到的文本私信、顶层评论和二级评论由 `doubao-seed-character-260628` 生成并直接回复；
+- 基线完成后，新收到的文本私信、顶层评论和二级评论按账号选择的 `CHAT回复` 或 `招聘接口` 生成并直接回复；
 - 每个访客使用独立的服务端租户会话。
 
 > 视频号助手端点是私有、未文档化接口。本仓库是技术 Demo，不是微信官方 SDK，也不能在完成真实账号逐项验收与合规评估前视为生产集成。
@@ -34,13 +34,14 @@ Requirements:
 
 - Node.js 22.13 or newer;
 - a 32-byte encryption key;
-- a Volcengine Ark API key with access to `doubao-seed-character-260628` if automatic replies should run.
+- a configured CHAT provider, recruitment provider, or both if automatic replies should run.
 
 ```bash
 cp .env.example .env
 openssl rand -base64 32
 # Put the generated value in SESSION_ENCRYPTION_KEY.
-# Put the Ark key in ARK_API_KEY.
+# Put the Ark key in ARK_API_KEY. Configure FUNNEL_BASE_URL only on the
+# allowlisted DEV backend when the recruitment reply provider is required.
 npm ci
 npm run check
 npm run dev
@@ -48,7 +49,7 @@ npm run dev
 
 Open [http://127.0.0.1:4310](http://127.0.0.1:4310).
 
-If `ARK_API_KEY` is empty, QR login and read-only UI can still run, but automatic reply remains disabled. The service never silently falls back to another model.
+If `ARK_API_KEY` is empty, QR login and read-only UI can still run, but accounts using `CHAT回复` cannot start automatic replies. `招聘接口` is available only when `FUNNEL_BASE_URL` is configured and the selected account has a saved job number. Provider failures never silently fall back to the other provider.
 
 ## Configuration
 
@@ -66,6 +67,8 @@ If `ARK_API_KEY` is empty, QR login and read-only UI can still run, but automati
 | `ARK_API_KEY` | Volcengine Ark inference key | empty |
 | `ARK_BASE_URL` | Ark OpenAI-compatible inference base URL | Beijing `/api/v3` |
 | `ARK_MODEL` | Exact model or endpoint ID | `doubao-seed-character-260628` |
+| `FUNNEL_BASE_URL` | Recruitment reply service base URL; configure on allowlisted DEV only | empty |
+| `FUNNEL_TIMEOUT_MS` | Recruitment reply request timeout | `45000` |
 
 Secrets and message bodies are never included in startup summaries or request-error logs.
 
@@ -92,7 +95,12 @@ Authenticated sessions remain encrypted on the server across page closure and se
 
 ### Reply outcomes
 
-`queued → generating → generated → sending → confirmed | failed | submitted_unknown`
+`queued → generating → generated → sending → confirmed | skipped | failed | submitted_unknown`
+
+- Each retained Video Channels account selects either `CHAT回复` or `招聘接口` and stores its own recruitment job number.
+- Recruitment comments use `/job/comment-reply/{job_number}`; an empty reply becomes `skipped` and produces no Video Channels write.
+- Recruitment direct messages use `/agent/b2c/chat`; every returned content item is sent as a separate text bubble in order.
+- Recruitment actions that require QR media or human handoff fail before text dispatch until those actions have a real implementation.
 
 - Comment success requires a non-empty platform `commentId`.
 - Direct-message success requires a non-empty platform `svrMsgId`.
@@ -124,7 +132,8 @@ Account, Finder, message and reply-target IDs are never accepted from the browse
 - This is a single-instance technical Demo, not a horizontally scaled production service.
 - One process serves multiple isolated visitors with bounded cross-tenant worker concurrency; it is not a high-volume queue.
 - WeChat private endpoints and response shapes can change without notice; each source fails closed on unknown required fields.
-- New inbound text and the generated reply are sent to the configured Volcengine Ark account. The operator must disclose and approve that data flow.
+- New inbound text and generated replies are sent to the account-selected CHAT or recruitment provider. The operator must disclose and approve that data flow.
+- The recruitment provider is called only by the backend; the browser never receives its host and cannot bypass the DEV source-IP allowlist.
 - The fixed prompt blocks obvious credential requests, but the Demo does not provide a complete moderation, policy, or human-approval system.
 - Public exposure requires HTTPS, network-level rate limiting, a deployment-specific encryption key, explicit logout/data removal, and an explicit privacy/compliance review.
 - A platform write is counted only when the expected platform ID is returned. Ambiguous writes are not retried automatically.
@@ -134,7 +143,8 @@ Account, Finder, message and reply-target IDs are never accepted from the browse
 
 ```bash
 cp .env.example .env
-# Configure SESSION_ENCRYPTION_KEY, ARK_API_KEY, HOST=0.0.0.0
+# Configure SESSION_ENCRYPTION_KEY, ARK_API_KEY and, when needed on an
+# allowlisted host, FUNNEL_BASE_URL. Set HOST=0.0.0.0 for this local example.
 docker compose up --build
 ```
 

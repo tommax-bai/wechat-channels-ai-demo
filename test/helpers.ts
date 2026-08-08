@@ -51,6 +51,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     arkBaseUrl: "https://ark.example.test/api/v3",
     arkModel: "doubao-seed-character-260628",
     arkTimeoutMs: 1_000,
+    funnelTimeoutMs: 1_000,
     ...overrides,
   };
 }
@@ -62,9 +63,13 @@ export function temporaryDirectory(): { path: string; cleanup: () => void } {
 
 export class FakeReplyModel implements ReplyModel {
   readonly calls: ReplyModelInput[] = [];
+  result: ReplyModelResult | null = null;
+  error: Error | null = null;
 
   async generate(input: ReplyModelInput): Promise<ReplyModelResult> {
     this.calls.push(input);
+    if (this.error) throw this.error;
+    if (this.result) return this.result;
     return {
       text: `您好，已收到：${input.text}`,
       model: "doubao-seed-character-260628",
@@ -76,11 +81,13 @@ export class FakeReplyModel implements ReplyModel {
 export class FakeWechatGateway implements WechatGateway {
   readonly sends: Array<{ session: PlatformSession; target: ReplyTarget; text: string; clientId: string }> = [];
   readonly newItems = new Map<string, NormalizedInboundItem[]>();
+  readonly newComments = new Map<string, NormalizedInboundItem[]>();
   accountName: string | null = null;
   captureRequired = false;
   captureCalls = 0;
   dmSyncError: WechatApiError | null = null;
   sendError: WechatApiError | null = null;
+  sendErrors: Array<WechatApiError | null> = [];
   historyPagesRemaining = 1;
   private readonly tokenAccounts = new Map<string, string>();
   private dmGate: AsyncGate | null = null;
@@ -156,8 +163,11 @@ export class FakeWechatGateway implements WechatGateway {
     return { items, cursor: `cursor-${Date.now()}`, hasMore: false };
   }
 
-  async syncComments(): Promise<WechatSyncPage> {
-    return { items: [], cursor: null, hasMore: false };
+  async syncComments(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage> {
+    if (cursor === null) return { items: [], cursor: "comment-cursor-1", hasMore: false };
+    const items = this.newComments.get(session.finderUsername) ?? [];
+    this.newComments.set(session.finderUsername, []);
+    return { items, cursor: `comment-cursor-${Date.now()}`, hasMore: false };
   }
 
   async sendReply(
@@ -188,6 +198,8 @@ export class FakeWechatGateway implements WechatGateway {
       afterDispatchGate.markStarted();
       await afterDispatchGate.wait;
     }
+    const scriptedError = this.sendErrors[this.sends.length - 1];
+    if (scriptedError) throw scriptedError;
     if (this.sendError) throw this.sendError;
     return { accepted: true, externalId: `sent-${this.sends.length}` };
   }
@@ -265,6 +277,28 @@ export function fakeDm(
       sessionId: `session-${externalId}`,
       fromUsername: ownIdentity,
       toUsername: `peer-${externalId}`,
+    },
+    rawShapeVersion: 1,
+  };
+}
+
+export function fakeComment(
+  externalId: string,
+  text: string,
+): NormalizedInboundItem {
+  return {
+    source: "comment",
+    externalId,
+    authorId: `commenter-${externalId}`,
+    authorName: "测试评论者",
+    text,
+    occurredAt: Date.now(),
+    target: {
+      kind: "comment",
+      postId: `post-${externalId}`,
+      rootCommentId: externalId,
+      parentCommentId: externalId,
+      commentContext: { commentId: externalId },
     },
     rawShapeVersion: 1,
   };

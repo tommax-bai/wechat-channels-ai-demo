@@ -12,6 +12,7 @@ import {
 } from "../repository.js";
 import type {
   NormalizedInboundItem,
+  ReplyProvider,
   ReplyModelResult,
   SessionSnapshot,
   SharedSessionSummary,
@@ -83,6 +84,8 @@ export class SessionService {
         accountDisplayName: credential.value.nickname,
         authState: session.authState,
         automationEnabled: session.automationEnabled,
+        replyProvider: session.replyProvider,
+        funnelJobNumber: session.funnelJobNumber,
       }];
     });
   }
@@ -103,8 +106,45 @@ export class SessionService {
   }
 
   setAutomation(session: SessionRow, enabled: boolean): SessionRow {
-    const effective = enabled && this.config.autoReplyEnabled && Boolean(this.config.arkApiKey);
-    return this.repository.setAutomation(session.id, effective, Date.now()) ?? session;
+    const current = this.repository.getSession(session.id) ?? session;
+    const effective = enabled
+      && this.config.autoReplyEnabled
+      && this.isReplyProviderConfigured(current);
+    return this.repository.setAutomation(current.id, effective, Date.now()) ?? current;
+  }
+
+  reconcileProviderAvailability(now = Date.now()): number {
+    let stopped = 0;
+    for (const session of this.repository.listRetainedSessions(now)) {
+      if (!session.automationEnabled || this.isReplyProviderConfigured(session)) continue;
+      const updated = this.repository.stopAutomationForUnavailableProvider(session.id, now);
+      if (updated && !updated.automationEnabled) stopped += 1;
+    }
+    return stopped;
+  }
+
+  setReplyProvider(
+    session: SessionRow,
+    provider: ReplyProvider,
+    jobNumber?: string,
+  ): SessionRow {
+    const current = this.repository.getSession(session.id) ?? session;
+    let funnelJobNumber = current.funnelJobNumber;
+    if (provider === "funnel") {
+      funnelJobNumber = jobNumber?.trim() || null;
+      if (!funnelJobNumber) throw new Error("funnel_job_number_required");
+      if (!this.config.funnelBaseUrl) throw new Error("funnel_provider_unavailable");
+    }
+    let updated = this.repository.setReplyProvider(
+      current.id,
+      provider,
+      funnelJobNumber,
+      Date.now(),
+    ) ?? current;
+    if (updated.automationEnabled && !this.isReplyProviderConfigured(updated)) {
+      updated = this.repository.setAutomation(updated.id, false, Date.now()) ?? updated;
+    }
+    return updated;
   }
 
   logout(session: SessionRow): void {
@@ -174,13 +214,24 @@ export class SessionService {
       qrDataUrl,
       qrExpiresAt,
       automationEnabled: current.automationEnabled,
+      replyProvider: current.replyProvider,
+      funnelJobNumber: current.funnelJobNumber,
       sources,
       timeline,
       service: {
         autoReplyEnabled: this.config.autoReplyEnabled,
         modelConfigured: Boolean(this.config.arkApiKey),
+        chatReplyConfigured: Boolean(this.config.arkApiKey),
+        funnelReplyConfigured: Boolean(this.config.funnelBaseUrl),
+        selectedProviderConfigured: this.isReplyProviderConfigured(current),
       },
     };
+  }
+
+  private isReplyProviderConfigured(session: SessionRow): boolean {
+    return session.replyProvider === "chat-llm"
+      ? Boolean(this.config.arkApiKey)
+      : Boolean(this.config.funnelBaseUrl && session.funnelJobNumber);
   }
 
   readCredential(sessionId: string): StoredCredential | null {

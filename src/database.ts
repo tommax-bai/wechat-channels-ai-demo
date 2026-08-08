@@ -18,6 +18,9 @@ export function openDatabase(path: string): SqliteDatabase {
       platform_persistent INTEGER NOT NULL DEFAULT 0 CHECK (platform_persistent IN (0, 1)),
       auth_state TEXT NOT NULL,
       automation_enabled INTEGER NOT NULL DEFAULT 1 CHECK (automation_enabled IN (0, 1)),
+      reply_provider TEXT NOT NULL DEFAULT 'chat-llm'
+        CHECK (reply_provider IN ('chat-llm', 'funnel')),
+      funnel_job_number TEXT,
       auth_generation INTEGER NOT NULL DEFAULT 0,
       run_generation INTEGER NOT NULL DEFAULT 0,
       account_key_hash TEXT UNIQUE,
@@ -105,6 +108,16 @@ export function openDatabase(path: string): SqliteDatabase {
       ADD COLUMN platform_persistent INTEGER NOT NULL DEFAULT 0
         CHECK (platform_persistent IN (0, 1))
     `);
+  }
+  if (!sessionColumns.some((column) => column.name === "reply_provider")) {
+    db.exec(`
+      ALTER TABLE demo_sessions
+      ADD COLUMN reply_provider TEXT NOT NULL DEFAULT 'chat-llm'
+        CHECK (reply_provider IN ('chat-llm', 'funnel'))
+    `);
+  }
+  if (!sessionColumns.some((column) => column.name === "funnel_job_number")) {
+    db.exec("ALTER TABLE demo_sessions ADD COLUMN funnel_job_number TEXT");
   }
   db.prepare(`
     UPDATE demo_sessions

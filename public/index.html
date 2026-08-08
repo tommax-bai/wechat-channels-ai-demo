@@ -15,7 +15,7 @@
         <div>
           <p class="eyebrow">WECHAT CHANNELS · AI REPLY</p>
           <h1>视频号 AI 客服 Demo</h1>
-          <p class="lead">扫码连接一个视频号，展示私信与评论，并由chat角色模型回复登录后新收到的文本内容。</p>
+          <p class="lead">扫码连接一个视频号，展示私信与评论，并由当前账号选择的回复方式处理登录后新收到的文本内容。</p>
         </div>
         <div class="hero-status">
           <span id="connectionDot" class="status-dot"></span>
@@ -82,10 +82,39 @@
             </div>
             <span id="automationBadge" class="badge muted">未启动</span>
           </div>
-          <div class="model-card">
-            <span>回复模型</span>
-            <strong>chat-llm</strong>
-            <small id="modelStatus">检查配置中</small>
+          <div class="provider-card">
+            <div class="provider-heading">
+              <div>
+                <span>回复方式</span>
+                <strong id="providerLabel">CHAT回复</strong>
+              </div>
+              <small id="modelStatus">检查配置中</small>
+            </div>
+            <fieldset class="provider-options">
+              <legend>选择当前账号的新回复生成方式</legend>
+              <label class="provider-option" for="chatProviderInput">
+                <input id="chatProviderInput" type="radio" name="replyProvider">
+                <span>
+                  <strong>CHAT回复</strong>
+                  <small>通用对话回复</small>
+                </span>
+              </label>
+              <label class="provider-option" for="funnelProviderInput">
+                <input id="funnelProviderInput" type="radio" name="replyProvider">
+                <span>
+                  <strong>招聘接口</strong>
+                  <small id="funnelProviderStatus">检查配置中</small>
+                </span>
+              </label>
+            </fieldset>
+            <div class="provider-job">
+              <label for="funnelJobNumberInput">招聘岗位号</label>
+              <input id="funnelJobNumberInput" type="text" maxlength="128" autocomplete="off" placeholder="选择招聘接口后填写">
+            </div>
+            <div class="provider-save-row">
+              <p id="providerHint" role="status">读取当前账号设置中</p>
+              <button id="saveReplyProviderButton" class="button provider-save" type="button" disabled>保存回复方式</button>
+            </div>
           </div>
           <div class="source-list">
             <div class="source-row">
