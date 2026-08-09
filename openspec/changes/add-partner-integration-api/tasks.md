@@ -22,6 +22,11 @@
 
 ## 5. Integration and DEV delivery
 
-- [ ] 5.1 Commit the feature worktree, fast-forward the canonical main checkout, and record integration evidence
+- [x] 5.1 Commit the feature worktree, fast-forward the canonical main checkout, and record integration evidence
 - [ ] 5.2 Back up and deploy only the independent Demo service to DEV with a non-disclosed Partner key
 - [ ] 5.3 Verify public health, Partner authentication/account API, existing browser API, and unrelated DEV service stability
+
+## Evidence
+
+- Feature and fast-forward integration: repository `wechat-channels-ai-demo`, commit `8d8d10a8996eb4418eb275842050351e510f3925` on `main`.
+- Pre-integration validation: `npm run check` passed with 10 test files and 92 tests; `openspec validate add-partner-integration-api --strict` and both read-only reviews passed with no remaining P0-P2 findings.
