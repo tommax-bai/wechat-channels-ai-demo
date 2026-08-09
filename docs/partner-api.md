@@ -2,6 +2,8 @@
 
 Partner API 供其他业务服务接入视频号登录、托管、回复配置、业务微信二维码、评论和私信展示。当前 DEV 地址：
 
+只接入账号创建、扫码登录、登录过期判断和业务联系二维码时，可直接使用聚焦文档 [`partner-login-contact-qr-api.md`](./partner-login-contact-qr-api.md)。
+
 ```text
 https://dev.yytt.com.cn/partner/v1
 ```
