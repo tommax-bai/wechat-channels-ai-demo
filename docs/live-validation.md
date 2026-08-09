@@ -12,6 +12,7 @@ Run these stages in order against an explicitly selected Demo account. Stop at t
 - [ ] `ARK_API_KEY` belongs to the Demo environment.
 - [ ] The exact `ARK_MODEL` is accepted by that key; `ModelNotOpen` is shown as failure and no other model is substituted.
 - [ ] `FUNNEL_BASE_URL` is configured only on the allowlisted DEV backend, and its `/public/health` returns HTTP 200 from that host.
+- [ ] `PARTNER_API_KEY` is unique to this deployment, held only by the two backends, and absent from browser code and logs.
 - [ ] A known existing recruitment `job_number` is saved on the test account before selecting `招聘接口`.
 - [ ] The operator confirms the customer-facing private-interface and credential-custody notice.
 

@@ -22,7 +22,7 @@ Single Fastify service
     ├─ browserless QR login worker
     ├─ WeChat private-API adapter
     ├─ DM/comment baseline and incremental poller
-    ├─ Doubao generation and exact-target sender
+    ├─ selected reply provider and exact-target sender
     └─ SQLite WAL
 ```
 
@@ -69,6 +69,7 @@ If `ARK_API_KEY` is empty, QR login and read-only UI can still run, but accounts
 | `ARK_MODEL` | Exact model or endpoint ID | `doubao-seed-character-260628` |
 | `FUNNEL_BASE_URL` | Recruitment reply service base URL; configure on allowlisted DEV only | empty |
 | `FUNNEL_TIMEOUT_MS` | Recruitment reply request timeout | `45000` |
+| `PARTNER_API_KEY` | Dedicated server-to-server credential for `/partner/v1`; minimum 32 characters | empty (API disabled) |
 
 Secrets and message bodies are never included in startup summaries or request-error logs.
 
@@ -124,6 +125,7 @@ Authenticated sessions remain encrypted on the server across page closure and se
 | `POST /api/session/automation` | Stop/resume new automatic replies |
 | `GET /api/events` | Authenticated SSE state notifications |
 | `DELETE /api/session` | Delete credentials, content and tenant scope |
+| `/partner/v1/*` | Bearer-authenticated backend integration API; see [Partner API](docs/partner-api.md) |
 
 Account, Finder, message and reply-target IDs are never accepted from the browser.
 
@@ -165,3 +167,8 @@ Automated tests use fake WeChat and Ark servers. They never scan a real account 
 The current DEV host keeps the application loopback-only and publishes an
 ephemeral HTTPS URL through an independent Cloudflare Quick Tunnel service.
 See [DEV deployment](docs/dev-deployment.md).
+
+For integration from another application backend, see the [Partner API guide](docs/partner-api.md)
+and [OpenAPI contract](docs/partner-api.openapi.yaml). The Partner credential stays on
+the calling backend; the colleague's browser calls that backend rather than embedding the
+credential in frontend code.

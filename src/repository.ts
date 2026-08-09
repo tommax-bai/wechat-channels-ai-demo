@@ -525,6 +525,44 @@ export class DemoRepository {
     return rows.map(mapInbound);
   }
 
+  listInboundBySource(
+    sessionId: string,
+    source: InboundSource,
+    limitPlusOne: number,
+    cursor?: { discoveredAt: number; id: string },
+  ): InboundRow[] {
+    const rows = cursor
+      ? this.db
+          .prepare(`
+            SELECT id, session_id, source, payload_envelope, occurred_at, discovered_at,
+                   historical, reply_eligible
+            FROM inbound_items
+            WHERE session_id = ? AND source = ?
+              AND ((discovered_at < ?) OR (discovered_at = ? AND id < ?))
+            ORDER BY discovered_at DESC, id DESC
+            LIMIT ?
+          `)
+          .all(
+            sessionId,
+            source,
+            cursor.discoveredAt,
+            cursor.discoveredAt,
+            cursor.id,
+            limitPlusOne,
+          ) as RawInbound[]
+      : this.db
+          .prepare(`
+            SELECT id, session_id, source, payload_envelope, occurred_at, discovered_at,
+                   historical, reply_eligible
+            FROM inbound_items
+            WHERE session_id = ? AND source = ?
+            ORDER BY discovered_at DESC, id DESC
+            LIMIT ?
+          `)
+          .all(sessionId, source, limitPlusOne) as RawInbound[];
+    return rows.map(mapInbound);
+  }
+
   getInbound(id: string, sessionId: string): InboundRow | null {
     const row = this.db
       .prepare(`

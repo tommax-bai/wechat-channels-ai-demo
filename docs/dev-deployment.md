@@ -23,6 +23,10 @@ Demo uses `PUBLIC_ORIGIN=https://dev.yytt.com.cn` and
 SSE path; the client retains its five-second polling fallback only for any
 future `.trycloudflare.com` fallback.
 
+The server-to-server `/partner/v1` routes use a separate `PARTNER_API_KEY` from
+the root-owned environment. Absence disables those routes; readiness reports
+only `partnerApiConfigured` and never the credential itself.
+
 QR creation and polling remain pure HTTP. After scan confirmation the service
 starts an isolated headless Chrome process, imports that login's bounded WeChat
 cookies, captures one exact first-party `/auth/auth_data` request, encrypts the
@@ -53,6 +57,9 @@ every reload and leave Certbot's renewal timer enabled.
 - `curl http://127.0.0.1:4310/readyz`
 - `curl -I http://dev.yytt.com.cn/healthz` and require an HTTPS redirect
 - `curl https://dev.yytt.com.cn/healthz`
+- require an unauthenticated Partner request to return 401, then use the
+  deployment credential locally to create, inspect, and delete one temporary
+  unscanned account without printing the credential
 - verify the certificate hostname and expiry for `dev.yytt.com.cn`
 - create one anonymous session and request a QR without scanning it
 - scan once and require a non-empty capture-backed post/comment read before

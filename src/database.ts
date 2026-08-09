@@ -67,6 +67,9 @@ export function openDatabase(path: string): SqliteDatabase {
     CREATE INDEX IF NOT EXISTS idx_inbound_session_time
       ON inbound_items(session_id, discovered_at DESC);
 
+    CREATE INDEX IF NOT EXISTS idx_inbound_session_source_time_id
+      ON inbound_items(session_id, source, discovered_at DESC, id DESC);
+
     CREATE TABLE IF NOT EXISTS reply_jobs (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES demo_sessions(id) ON DELETE CASCADE,

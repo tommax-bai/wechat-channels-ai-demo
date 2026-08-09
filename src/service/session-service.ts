@@ -8,16 +8,22 @@ import type { SecureStore } from "../crypto.js";
 import {
   isSessionRetained,
   type DemoRepository,
+  type InboundRow,
   type SessionRow,
 } from "../repository.js";
 import type {
+  AuthState,
+  InboundSource,
   NormalizedInboundItem,
+  PartnerContentCursor,
+  PartnerContentItem,
+  PartnerContentPage,
   ReplyProvider,
   ReplyModelResult,
   SessionSnapshot,
   SharedSessionSummary,
 } from "../types.js";
-import type { WechatGateway } from "../wechat/client.js";
+import type { PendingWechatLogin, WechatGateway } from "../wechat/client.js";
 import type { StoredCredential } from "./credentials.js";
 
 export interface BrowserSession {
@@ -61,6 +67,19 @@ export class SessionService {
     return { token, row, created: true };
   }
 
+  createPartnerSession(now = Date.now()): SessionRow {
+    if (this.repository.countRetainedSessions(now) >= this.config.maxActiveSessions) {
+      throw new SessionLimitError();
+    }
+    const id = digestSessionToken(createSessionToken());
+    return this.repository.createSession(
+      id,
+      now,
+      now + this.config.pendingSessionTtlMs,
+      false,
+    );
+  }
+
   resolve(rawToken: string | undefined, now = Date.now()): SessionRow | null {
     if (!rawToken) return null;
     const row = this.repository.getSession(digestSessionToken(rawToken));
@@ -90,8 +109,34 @@ export class SessionService {
     });
   }
 
+  listPartnerSessions(now = Date.now()): SessionRow[] {
+    return this.repository.listRetainedSessions(now);
+  }
+
   async startLogin(session: SessionRow, now = Date.now()): Promise<void> {
     const pending = await this.wechat.createLogin(this.config.qrTtlMs);
+    const envelope = this.secureStore.encryptJson(
+      { kind: "pending", value: pending } satisfies StoredCredential,
+      session.id,
+      "credentials",
+    );
+    this.repository.beginQr(
+      session.id,
+      now,
+      now + this.config.pendingSessionTtlMs,
+      envelope,
+    );
+  }
+
+  async startPartnerLogin(session: SessionRow, now = Date.now()): Promise<void> {
+    this.assertPartnerLoginAllowed(this.repository.getSession(session.id));
+    let pending: PendingWechatLogin;
+    try {
+      pending = await this.wechat.createLogin(this.config.qrTtlMs);
+    } catch (error) {
+      throw new Error("partner_login_qr_unavailable", { cause: error });
+    }
+    this.assertPartnerLoginAllowed(this.repository.getSession(session.id));
     const envelope = this.secureStore.encryptJson(
       { kind: "pending", value: pending } satisfies StoredCredential,
       session.id,
@@ -226,6 +271,98 @@ export class SessionService {
         selectedProviderConfigured: this.isReplyProviderConfigured(current),
       },
     };
+  }
+
+  listPartnerContent(
+    session: SessionRow,
+    source: InboundSource,
+    limit: number,
+    cursor?: PartnerContentCursor,
+  ): PartnerContentPage {
+    const rows = this.repository.listInboundBySource(
+      session.id,
+      source,
+      limit + 1,
+      cursor,
+    );
+    const hasMore = rows.length > limit;
+    const visibleRows = rows.slice(0, limit);
+    const last = visibleRows.at(-1);
+    return {
+      items: visibleRows.map((row) => this.projectPartnerInbound(session, row)),
+      hasMore,
+      nextCursorData: hasMore && last
+        ? { discoveredAt: last.discoveredAt, id: last.id }
+        : null,
+    };
+  }
+
+  projectPartnerInbound(session: SessionRow, row: InboundRow): PartnerContentItem {
+    if (row.sessionId !== session.id) throw new Error("partner_content_session_mismatch");
+    const item = this.secureStore.decryptJson<NormalizedInboundItem>(
+      row.payloadEnvelope,
+      session.id,
+      `inbound:${row.id}`,
+    );
+    const reply = this.repository.getReplyForInbound(row.id, session.id);
+    const output = reply?.outputEnvelope
+      ? this.secureStore.decryptJson<ReplyModelResult>(
+          reply.outputEnvelope,
+          session.id,
+          `reply:${reply.id}`,
+        )
+      : null;
+    return {
+      id: row.id,
+      authorName: item.authorName,
+      text: item.text,
+      occurredAt: row.occurredAt,
+      discoveredAt: row.discoveredAt,
+      historical: row.historical,
+      replyEligible: row.replyEligible,
+      reply: reply
+        ? {
+            state: reply.state,
+            text: output?.text ?? null,
+            messages: output
+              ? output.messages?.length ? output.messages : [output.text]
+              : [],
+            errorCode: reply.errorCode,
+            updatedAt: reply.updatedAt,
+          }
+        : null,
+    };
+  }
+
+  private assertPartnerLoginAllowed(session: SessionRow | null): asserts session is SessionRow {
+    if (!session || session.authState === "logged_out") {
+      throw new Error("partner_account_not_found");
+    }
+    if (
+      session.authState === "schema_changed"
+      && this.readCredential(session.id)?.kind !== "session"
+    ) return;
+    const admission: Record<AuthState, "allowed" | "in_progress" | "hosted" | "missing"> = {
+      new: "allowed",
+      qr_pending: "allowed",
+      expired: "allowed",
+      cancelled: "allowed",
+      no_account: "allowed",
+      auth_required: "allowed",
+      scanned: "in_progress",
+      capturing_context: "in_progress",
+      authenticated: "hosted",
+      baseline_sync: "hosted",
+      active: "hosted",
+      stopped: "hosted",
+      schema_changed: "hosted",
+      logged_out: "missing",
+    };
+    const result = admission[session.authState];
+    if (result === "allowed") return;
+    if (result === "in_progress") throw new Error("login_in_progress");
+    if (result === "hosted") throw new Error("account_already_hosted");
+    throw new Error("partner_account_not_found");
   }
 
   private isReplyProviderConfigured(session: SessionRow): boolean {

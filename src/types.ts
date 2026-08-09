@@ -152,4 +152,32 @@ export interface SharedSessionSummary {
   replyProvider: ReplyProvider;
   funnelJobNumber: string | null;
 }
+
+export interface PartnerContentCursor {
+  discoveredAt: number;
+  id: string;
+}
+
+export interface PartnerContentItem {
+  id: string;
+  authorName: string;
+  text: string;
+  occurredAt: number;
+  discoveredAt: number;
+  historical: boolean;
+  replyEligible: boolean;
+  reply: {
+    state: ReplyState;
+    text: string | null;
+    messages: string[];
+    errorCode: string | null;
+    updatedAt: number;
+  } | null;
+}
+
+export interface PartnerContentPage {
+  items: PartnerContentItem[];
+  hasMore: boolean;
+  nextCursorData: PartnerContentCursor | null;
+}
 import type { SerializedCookieJar } from "tough-cookie";

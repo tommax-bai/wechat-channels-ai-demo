@@ -9,6 +9,7 @@ import Fastify, {
 } from "fastify";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
+import { registerPartnerApi } from "./partner-api.js";
 import {
   isSessionRetained,
   type DemoRepository,
@@ -56,7 +57,11 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
-    if (request.url.startsWith("/api/") || request.url === "/") {
+    if (
+      request.url.startsWith("/api/")
+      || request.url.startsWith("/partner/v1")
+      || request.url === "/"
+    ) {
       reply.header("Cache-Control", "no-store");
       reply.header("X-Content-Type-Options", "nosniff");
       reply.header("Referrer-Policy", "no-referrer");
@@ -80,6 +85,7 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     modelConfigured: Boolean(deps.config.arkApiKey),
     chatReplyConfigured: Boolean(deps.config.arkApiKey),
     funnelReplyConfigured: Boolean(deps.config.funnelBaseUrl),
+    partnerApiConfigured: Boolean(deps.config.partnerApiKey),
     autoReplyEnabled: deps.config.autoReplyEnabled,
     commentCaptureConfigured: Boolean(
       deps.config.wechatBrowserExecutablePath,
@@ -234,6 +240,8 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     heartbeatTimer.unref();
   });
 
+  registerPartnerApi(app, deps);
+
   app.setErrorHandler((error, request, reply) => {
     const code = safeServerError(error);
     const statusCode = statusFor(code);
@@ -332,6 +340,11 @@ function safeEventType(value: string): string {
 
 function safeServerError(error: unknown): string {
   if (error instanceof z.ZodError) return "invalid_request";
+  if (
+    error instanceof Error
+    && "statusCode" in error
+    && error.statusCode === 400
+  ) return "invalid_request";
   if (error instanceof SessionLimitError) return error.message;
   if (error instanceof Error && /^[a-z0-9_:-]{1,120}$/.test(error.message)) return error.message;
   return "internal_error";
@@ -339,11 +352,27 @@ function safeServerError(error: unknown): string {
 
 function statusFor(code: string): number {
   if (code === "demo_session_required") return 401;
+  if (code === "partner_api_unauthorized") return 401;
   if (code === "cross_origin_mutation_rejected") return 403;
-  if (code === "platform_send_in_flight") return 409;
+  if (
+    code === "platform_send_in_flight"
+    || code === "login_in_progress"
+    || code === "account_already_hosted"
+  ) return 409;
   if (code === "active_session_limit_reached") return 503;
-  if (code === "shared_session_unavailable") return 404;
-  if (code === "invalid_request" || code === "funnel_job_number_required") return 400;
-  if (code === "funnel_provider_unavailable") return 503;
+  if (
+    code === "shared_session_unavailable"
+    || code === "partner_account_not_found"
+  ) return 404;
+  if (
+    code === "invalid_request"
+    || code === "invalid_cursor"
+    || code === "funnel_job_number_required"
+  ) return 400;
+  if (
+    code === "funnel_provider_unavailable"
+    || code === "partner_api_unavailable"
+  ) return 503;
+  if (code === "partner_login_qr_unavailable") return 502;
   return 502;
 }

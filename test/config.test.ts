@@ -73,3 +73,31 @@ describe("reply provider configuration", () => {
     expect(summary).not.toHaveProperty("model");
   });
 });
+
+describe("Partner API configuration", () => {
+  it("keeps the Partner API disabled when its server credential is absent", () => {
+    const config = loadConfig(baseEnv);
+
+    expect(config.partnerApiKey).toBeUndefined();
+    expect(safeStartupSummary(config)).toMatchObject({
+      partnerApiConfigured: false,
+    });
+  });
+
+  it("validates the credential without exposing it in startup output", () => {
+    const fixtureKey = "p".repeat(32);
+    const config = loadConfig({
+      ...baseEnv,
+      PARTNER_API_KEY: fixtureKey,
+    });
+    const summary = safeStartupSummary(config);
+
+    expect(config.partnerApiKey).toBe(fixtureKey);
+    expect(summary).toMatchObject({ partnerApiConfigured: true });
+    expect(JSON.stringify(summary)).not.toContain(fixtureKey);
+    expect(() => loadConfig({
+      ...baseEnv,
+      PARTNER_API_KEY: "too-short",
+    })).toThrow();
+  });
+});

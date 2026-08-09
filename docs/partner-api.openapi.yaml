@@ -1,0 +1,1011 @@
+openapi: 3.1.0
+info:
+  title: WeChat Channels Demo Partner API
+  version: 1.0.0
+  description: |
+    Server-to-server API for WeChat Channels account containers, QR login,
+    hosting state, reply settings, comments, and direct messages.
+
+    The Bearer credential must be held by the caller's backend. Browser-direct
+    access and CORS are not supported. Responses never expose platform
+    credentials, raw platform identifiers, concrete model names, upstream
+    endpoints, or provider request IDs.
+servers:
+  - url: https://dev.yytt.com.cn/partner/v1
+    description: DEV
+security:
+  - bearerAuth: []
+tags:
+  - name: Capabilities
+  - name: Accounts
+  - name: Login
+  - name: Hosting
+  - name: Content
+paths:
+  /capabilities:
+    get:
+      tags:
+        - Capabilities
+      operationId: getPartnerCapabilities
+      summary: Get configured reply-provider capabilities
+      responses:
+        '200':
+          description: Stable provider IDs and job-selection capability
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Capabilities'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+  /accounts:
+    post:
+      tags:
+        - Accounts
+      operationId: createPartnerAccount
+      summary: Create a disabled account container
+      description: |
+        Creates a retained account container with automatic replies disabled.
+        The request has no body. Repeating the request creates another account.
+      responses:
+        '201':
+          description: Account container created
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountProjection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Partner API is unavailable or the retained-account limit was reached
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                apiUnavailable:
+                  value:
+                    error: partner_api_unavailable
+                accountLimit:
+                  value:
+                    error: active_session_limit_reached
+    get:
+      tags:
+        - Accounts
+      operationId: listPartnerAccounts
+      summary: List all retained accounts
+      responses:
+        '200':
+          description: Retained accounts at every non-deleted login stage
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+  /accounts/{accountId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    get:
+      tags:
+        - Accounts
+      operationId: getPartnerAccount
+      summary: Get one account projection
+      responses:
+        '200':
+          description: Current account projection
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountProjection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+    delete:
+      tags:
+        - Accounts
+      operationId: deletePartnerAccount
+      summary: Delete an account and its dependent data
+      description: |
+        Deletes the persisted login credential, comments, direct messages, and
+        reply state. The operation is not recoverable. If a platform send is in
+        flight, the service preserves the account and returns a conflict.
+      responses:
+        '204':
+          description: Account deleted
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '409':
+          description: A platform send is in flight
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: platform_send_in_flight
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+  /accounts/{accountId}/login/qr:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    post:
+      tags:
+        - Login
+      operationId: createPartnerLoginQr
+      summary: Create or refresh a QR login attempt
+      description: |
+        A refresh is allowed only for an account that has no valid or
+        initializing hosted context. A state conflict preserves all existing
+        credentials and content.
+      responses:
+        '200':
+          description: Full account projection with a current QR data URL
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountProjection'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '409':
+          description: Login initialization is in progress or the account is already hosted
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                inProgress:
+                  value:
+                    error: login_in_progress
+                alreadyHosted:
+                  value:
+                    error: account_already_hosted
+        '502':
+          description: Platform QR creation failed before a login attempt was stored
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: partner_login_qr_unavailable
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+  /accounts/{accountId}/login/status:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    get:
+      tags:
+        - Login
+      operationId: getPartnerLoginStatus
+      summary: Poll QR scan and login completion state
+      description: Poll every two seconds until succeeded or a terminal error state.
+      responses:
+        '200':
+          description: Current login status
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+  /accounts/{accountId}/hosting:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    get:
+      tags:
+        - Hosting
+      operationId: getPartnerHosting
+      summary: Get hosting and platform-expiry state
+      responses:
+        '200':
+          description: Current hosting projection
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostingStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+    put:
+      tags:
+        - Hosting
+      operationId: updatePartnerHosting
+      summary: Enable or pause automatic replies
+      description: Source synchronization continues when automatic replies are paused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostingUpdate'
+      responses:
+        '200':
+          description: Updated full account projection
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountProjection'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+  /accounts/{accountId}/reply-settings:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    put:
+      tags:
+        - Hosting
+      operationId: updatePartnerReplySettings
+      summary: Select the reply provider and optional known job number
+      description: |
+        `funnel` requires a non-empty, caller-supplied `jobNumber`. This API has
+        no job catalogue and does not prevalidate whether the job exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplySettingsUpdate'
+            examples:
+              chat:
+                value:
+                  provider: chat-llm
+              funnel:
+                value:
+                  provider: funnel
+                  jobNumber: <known-job-number>
+      responses:
+        '200':
+          description: Updated full account projection
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountProjection'
+        '400':
+          description: Invalid body or missing Funnel job number
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidRequest:
+                  value:
+                    error: invalid_request
+                jobRequired:
+                  value:
+                    error: funnel_job_number_required
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          description: Partner API or selected provider is unavailable
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                apiUnavailable:
+                  value:
+                    error: partner_api_unavailable
+                funnelUnavailable:
+                  value:
+                    error: funnel_provider_unavailable
+  /accounts/{accountId}/comments:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+    get:
+      tags:
+        - Content
+      operationId: listPartnerComments
+      summary: Page normalized comments and current reply state
+      responses:
+        '200':
+          description: Comment page ordered by discovery time descending and opaque ID descending
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentPage'
+              example:
+                items:
+                  - id: <opaque-content-id>
+                    source: comment
+                    authorName: 访客A
+                    text: 这个岗位包住吗？
+                    occurredAt: '2026-08-09T04:30:00.000Z'
+                    discoveredAt: '2026-08-09T04:30:02.000Z'
+                    historical: false
+                    replyEligible: true
+                    reply:
+                      state: confirmed
+                      text: 提供住宿，具体安排可以继续沟通。
+                      messages:
+                        - 提供住宿，具体安排可以继续沟通。
+                      errorCode: null
+                      updatedAt: '2026-08-09T04:30:05.000Z'
+                hasMore: true
+                nextCursor: <opaque-cursor>
+        '400':
+          $ref: '#/components/responses/ContentRequestInvalid'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+  /accounts/{accountId}/direct-messages:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+      - $ref: '#/components/parameters/Limit'
+      - $ref: '#/components/parameters/Cursor'
+    get:
+      tags:
+        - Content
+      operationId: listPartnerDirectMessages
+      summary: Page normalized direct messages and current reply state
+      responses:
+        '200':
+          description: Direct-message page ordered by discovery time descending and opaque ID descending
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentPage'
+              example:
+                items:
+                  - id: <opaque-content-id>
+                    source: dm
+                    authorName: 视频号访客
+                    text: 可以分两条介绍吗？
+                    occurredAt: '2026-08-09T04:31:00.000Z'
+                    discoveredAt: '2026-08-09T04:31:01.000Z'
+                    historical: false
+                    replyEligible: true
+                    reply:
+                      state: confirmed
+                      text: 可以，先介绍工作地点，再介绍住宿。
+                      messages:
+                        - 工作地点在园区附近。
+                        - 站点可以协助安排住宿。
+                      errorCode: null
+                      updatedAt: '2026-08-09T04:31:04.000Z'
+                hasMore: false
+                nextCursor: null
+        '400':
+          $ref: '#/components/responses/ContentRequestInvalid'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+      description: Dedicated Partner API Key held only by the caller's backend.
+  headers:
+    CacheControlNoStore:
+      description: Partner responses must not be cached.
+      schema:
+        type: string
+        const: no-store
+  parameters:
+    AccountId:
+      name: accountId
+      in: path
+      required: true
+      description: Opaque account container identifier returned by POST /accounts.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{43}$'
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size. Defaults to 50 and is capped at 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        Opaque cursor returned by the previous page. It is bound to the account
+        and content source and cannot be reused in another scope.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 2048
+  responses:
+    Unauthorized:
+      description: Bearer credential is missing or does not match
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+        WWW-Authenticate:
+          description: Authentication scheme required by this API.
+          schema:
+            type: string
+            const: Bearer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: partner_api_unauthorized
+    PartnerApiUnavailable:
+      description: Partner API credential is not configured on the service
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: partner_api_unavailable
+    AccountNotFound:
+      description: Account is absent, deleted, logged out, or no longer retained
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: partner_account_not_found
+    InvalidRequest:
+      description: Request body, path parameter, or query parameter is invalid
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_request
+    ContentRequestInvalid:
+      description: Content query or cursor is invalid
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CacheControlNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalidRequest:
+              value:
+                error: invalid_request
+            invalidCursor:
+              value:
+                error: invalid_cursor
+  schemas:
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          minLength: 1
+          description: Stable machine-readable error code.
+          examples:
+            - invalid_request
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required:
+        - apiVersion
+        - providers
+        - jobSelection
+      properties:
+        apiVersion:
+          type: string
+          const: v1
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderCapability'
+        jobSelection:
+          $ref: '#/components/schemas/JobSelectionCapability'
+      example:
+        apiVersion: v1
+        providers:
+          - id: chat-llm
+            displayName: CHAT回复
+            configured: true
+            requiresJobNumber: false
+          - id: funnel
+            displayName: 招聘接口
+            configured: true
+            requiresJobNumber: true
+        jobSelection:
+          mode: known_job_number
+          catalogueAvailable: false
+    ProviderCapability:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - displayName
+        - configured
+        - requiresJobNumber
+      properties:
+        id:
+          $ref: '#/components/schemas/ReplyProvider'
+        displayName:
+          type: string
+          minLength: 1
+        configured:
+          type: boolean
+        requiresJobNumber:
+          type: boolean
+    JobSelectionCapability:
+      type: object
+      additionalProperties: false
+      required:
+        - mode
+        - catalogueAvailable
+      properties:
+        mode:
+          type: string
+          const: known_job_number
+        catalogueAvailable:
+          type: boolean
+          const: false
+    AccountList:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccountProjection'
+    AccountProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - accountId
+        - accountDisplayName
+        - createdAt
+        - updatedAt
+        - login
+        - hosting
+        - replySettings
+        - sources
+      properties:
+        accountId:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+          description: Opaque account container identifier.
+        accountDisplayName:
+          type:
+            - string
+            - 'null'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        login:
+          $ref: '#/components/schemas/LoginProjection'
+        hosting:
+          $ref: '#/components/schemas/HostingProjection'
+        replySettings:
+          $ref: '#/components/schemas/ReplySettingsProjection'
+        sources:
+          $ref: '#/components/schemas/SourceProjections'
+      example:
+        accountId: acc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        accountDisplayName: tom白
+        createdAt: '2026-08-09T04:00:00.000Z'
+        updatedAt: '2026-08-09T04:20:00.000Z'
+        login:
+          state: succeeded
+          scanned: true
+          succeeded: true
+          qrDataUrl: null
+          qrExpiresAt: null
+          errorCode: null
+        hosting:
+          state: active
+          automationEnabled: true
+          automationEffective: true
+          loginExpired: false
+          reloginRequired: false
+          credentialExpiresAt: null
+        replySettings:
+          provider: chat-llm
+          providerConfigured: true
+          jobNumber: null
+        sources:
+          comments:
+            state: healthy
+            baselineComplete: true
+            lastSuccessAt: '2026-08-09T04:19:58.000Z'
+            errorCode: null
+          directMessages:
+            state: healthy
+            baselineComplete: true
+            lastSuccessAt: '2026-08-09T04:19:59.000Z'
+            errorCode: null
+    LoginStatusResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - accountId
+        - accountDisplayName
+        - login
+      properties:
+        accountId:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        accountDisplayName:
+          type:
+            - string
+            - 'null'
+        login:
+          $ref: '#/components/schemas/LoginProjection'
+    LoginProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - state
+        - scanned
+        - succeeded
+        - qrDataUrl
+        - qrExpiresAt
+        - errorCode
+      properties:
+        state:
+          type: string
+          enum:
+            - not_requested
+            - waiting_scan
+            - scanned
+            - initializing
+            - succeeded
+            - qr_expired
+            - cancelled
+            - no_account
+            - login_required
+            - failed
+        scanned:
+          type: boolean
+          description: Scan detection only; it does not imply completed login.
+        succeeded:
+          type: boolean
+          description: True only after validated platform context has been persisted.
+        qrDataUrl:
+          type:
+            - string
+            - 'null'
+          pattern: '^data:image/png;base64,'
+          description: PNG data URL for the current usable QR attempt.
+        qrExpiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        errorCode:
+          type:
+            - string
+            - 'null'
+    HostingStatusResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - accountId
+        - hosting
+        - sources
+      properties:
+        accountId:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        hosting:
+          $ref: '#/components/schemas/HostingProjection'
+        sources:
+          $ref: '#/components/schemas/SourceProjections'
+    HostingProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - state
+        - automationEnabled
+        - automationEffective
+        - loginExpired
+        - reloginRequired
+        - credentialExpiresAt
+      properties:
+        state:
+          type: string
+          enum:
+            - not_ready
+            - initializing
+            - active
+            - paused
+            - degraded
+            - expired
+        automationEnabled:
+          type: boolean
+          description: Persisted automatic-reply switch.
+        automationEffective:
+          type: boolean
+          description: Whether the service switch, login, and selected provider currently make automation effective.
+        loginExpired:
+          type: boolean
+          description: True only after the platform rejects an already persisted session with the canonical auth-required result.
+        reloginRequired:
+          type: boolean
+        credentialExpiresAt:
+          type: 'null'
+          description: Always null because no local fixed credential lifetime is inferred.
+    HostingUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+    ReplySettingsProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - provider
+        - providerConfigured
+        - jobNumber
+      properties:
+        provider:
+          $ref: '#/components/schemas/ReplyProvider'
+        providerConfigured:
+          type: boolean
+        jobNumber:
+          type:
+            - string
+            - 'null'
+          description: Caller-supplied known Funnel job number; null for CHAT replies.
+    ReplySettingsUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - provider
+      properties:
+        provider:
+          $ref: '#/components/schemas/ReplyProvider'
+        jobNumber:
+          type: string
+          maxLength: 128
+          description: |
+            Known, caller-supplied job number. Required and non-blank when
+            provider is `funnel`; optional when provider is `chat-llm`.
+            Leading and trailing whitespace is removed before Funnel selection.
+    ReplyProvider:
+      type: string
+      enum:
+        - chat-llm
+        - funnel
+    SourceProjections:
+      type: object
+      additionalProperties: false
+      required:
+        - comments
+        - directMessages
+      properties:
+        comments:
+          $ref: '#/components/schemas/SourceProjection'
+        directMessages:
+          $ref: '#/components/schemas/SourceProjection'
+    SourceProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - state
+        - baselineComplete
+        - lastSuccessAt
+        - errorCode
+      properties:
+        state:
+          type: string
+          enum:
+            - pending
+            - healthy
+            - auth_required
+            - schema_changed
+            - error
+        baselineComplete:
+          type: boolean
+        lastSuccessAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        errorCode:
+          type:
+            - string
+            - 'null'
+    ContentPage:
+      type: object
+      additionalProperties: false
+      required:
+        - items
+        - hasMore
+        - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContentItem'
+        hasMore:
+          type: boolean
+        nextCursor:
+          type:
+            - string
+            - 'null'
+          description: Opaque next-page cursor, or null when no more rows exist.
+    ContentItem:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - source
+        - authorName
+        - text
+        - occurredAt
+        - discoveredAt
+        - historical
+        - replyEligible
+        - reply
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Stable opaque item ID used for upserts.
+        source:
+          type: string
+          enum:
+            - comment
+            - dm
+        authorName:
+          type: string
+        text:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        discoveredAt:
+          type: string
+          format: date-time
+        historical:
+          type: boolean
+        replyEligible:
+          type: boolean
+        reply:
+          oneOf:
+            - $ref: '#/components/schemas/ReplyProjection'
+            - type: 'null'
+    ReplyProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - state
+        - text
+        - messages
+        - errorCode
+        - updatedAt
+      properties:
+        state:
+          type: string
+          enum:
+            - queued
+            - generating
+            - generated
+            - sending
+            - confirmed
+            - skipped
+            - failed
+            - submitted_unknown
+        text:
+          type:
+            - string
+            - 'null'
+        messages:
+          type: array
+          description: Ordered reply bubbles. Direct-message clients must preserve this order.
+          items:
+            type: string
+        errorCode:
+          type:
+            - string
+            - 'null'
+        updatedAt:
+          type: string
+          format: date-time

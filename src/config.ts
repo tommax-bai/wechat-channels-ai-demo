@@ -11,6 +11,11 @@ const optionalUrlString = z.preprocess(
   z.string().url().optional(),
 );
 
+const optionalSecretString = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.string().min(32).optional(),
+);
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().default("127.0.0.1"),
@@ -43,6 +48,7 @@ const schema = z.object({
   ARK_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(45_000),
   FUNNEL_BASE_URL: optionalUrlString,
   FUNNEL_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(45_000),
+  PARTNER_API_KEY: optionalSecretString,
 });
 
 export type AppConfig = Readonly<{
@@ -76,6 +82,7 @@ export type AppConfig = Readonly<{
   arkTimeoutMs: number;
   funnelBaseUrl?: string;
   funnelTimeoutMs: number;
+  partnerApiKey?: string;
 }>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -130,6 +137,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ? { funnelBaseUrl: parsed.FUNNEL_BASE_URL.replace(/\/+$/, "") }
       : {}),
     funnelTimeoutMs: parsed.FUNNEL_TIMEOUT_MS,
+    ...(parsed.PARTNER_API_KEY
+      ? { partnerApiKey: parsed.PARTNER_API_KEY }
+      : {}),
   };
 }
 
@@ -159,6 +169,7 @@ export function safeStartupSummary(config: AppConfig): Record<string, unknown> {
     modelConfigured: Boolean(config.arkApiKey),
     chatReplyConfigured: Boolean(config.arkApiKey),
     funnelReplyConfigured: Boolean(config.funnelBaseUrl),
+    partnerApiConfigured: Boolean(config.partnerApiKey),
     wechatBaseHost: new URL(config.wechatBaseUrl).host,
     commentCaptureConfigured: Boolean(config.wechatBrowserExecutablePath),
     commentCaptureHeadless: config.wechatBrowserHeadless,
