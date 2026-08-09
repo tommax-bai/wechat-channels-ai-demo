@@ -4,12 +4,15 @@ info:
   version: 1.0.0
   description: |
     Server-to-server API for WeChat Channels account containers, QR login,
-    hosting state, reply settings, comments, and direct messages.
+    hosting state, reply settings, per-account business WeChat QR metadata,
+    comments, and direct messages.
 
     The Bearer credential must be held by the caller's backend. Browser-direct
     access and CORS are not supported. Responses never expose platform
     credentials, raw platform identifiers, concrete model names, upstream
-    endpoints, or provider request IDs.
+    endpoints, or provider request IDs. Business WeChat QR image bytes are
+    accepted only in the settings PUT request and are never returned by Partner
+    responses or account projections.
 servers:
   - url: https://dev.yytt.com.cn/partner/v1
     description: DEV
@@ -20,6 +23,7 @@ tags:
   - name: Accounts
   - name: Login
   - name: Hosting
+  - name: WeChat QR
   - name: Content
 paths:
   /capabilities:
@@ -359,6 +363,109 @@ paths:
                 funnelUnavailable:
                   value:
                     error: funnel_provider_unavailable
+  /accounts/{accountId}/wechat-qr:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    get:
+      tags:
+        - WeChat QR
+      operationId: getPartnerWechatQr
+      summary: Get business WeChat QR configuration metadata
+      description: The response never includes the configured image data URL or Base64 bytes.
+      responses:
+        '200':
+          description: Current QR configuration metadata
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WechatQrSettingsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+    put:
+      tags:
+        - WeChat QR
+      operationId: putPartnerWechatQr
+      summary: Configure or replace an account business WeChat QR
+      description: |
+        Accepts one non-empty PNG or JPEG data URL whose decoded bytes are at
+        most 512 KiB. The declared MIME must match the image magic bytes. The
+        response returns metadata only and never echoes `dataUrl`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WechatQrUpdate'
+            example:
+              dataUrl: data:image/png;base64,<base64-data>
+      responses:
+        '200':
+          description: Replaced QR configuration metadata without image bytes
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WechatQrSettingsResponse'
+        '400':
+          description: Invalid image data URL, MIME/signature mismatch, empty image, or decoded image over 512 KiB
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidImage:
+                  value:
+                    error: account_wechat_qr_invalid
+                tooLarge:
+                  value:
+                    error: account_wechat_qr_too_large
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
+    delete:
+      tags:
+        - WeChat QR
+      operationId: deletePartnerWechatQr
+      summary: Remove an account business WeChat QR
+      description: Removes only this account's QR asset and returns unconfigured metadata.
+      responses:
+        '200':
+          description: QR removed; response contains metadata only
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WechatQrSettingsResponse'
+              example:
+                accountId: acc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                wechatQr:
+                  configured: false
+                  mimeType: null
+                  byteLength: null
+                  updatedAt: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/AccountNotFound'
+        '503':
+          $ref: '#/components/responses/PartnerApiUnavailable'
   /accounts/{accountId}/comments:
     parameters:
       - $ref: '#/components/parameters/AccountId'
@@ -659,6 +766,7 @@ components:
         - login
         - hosting
         - replySettings
+        - wechatQr
         - sources
       properties:
         accountId:
@@ -681,6 +789,8 @@ components:
           $ref: '#/components/schemas/HostingProjection'
         replySettings:
           $ref: '#/components/schemas/ReplySettingsProjection'
+        wechatQr:
+          $ref: '#/components/schemas/WechatQrProjection'
         sources:
           $ref: '#/components/schemas/SourceProjections'
       example:
@@ -706,6 +816,11 @@ components:
           provider: chat-llm
           providerConfigured: true
           jobNumber: null
+        wechatQr:
+          configured: true
+          mimeType: image/png
+          byteLength: 18432
+          updatedAt: '2026-08-09T04:18:00.000Z'
         sources:
           comments:
             state: healthy
@@ -873,6 +988,68 @@ components:
       enum:
         - chat-llm
         - funnel
+    WechatQrSettingsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - accountId
+        - wechatQr
+      properties:
+        accountId:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+        wechatQr:
+          $ref: '#/components/schemas/WechatQrProjection'
+      description: QR configuration metadata only; image bytes and data URLs are never returned.
+    WechatQrProjection:
+      type: object
+      additionalProperties: false
+      required:
+        - configured
+        - mimeType
+        - byteLength
+        - updatedAt
+      properties:
+        configured:
+          type: boolean
+        mimeType:
+          type:
+            - string
+            - 'null'
+          enum:
+            - image/png
+            - image/jpeg
+            - null
+        byteLength:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          maximum: 524288
+          description: Decoded image byte length; null when no QR is configured.
+        updatedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      description: |
+        Metadata for one account's business WeChat QR. When `configured` is
+        false, all other properties are null. This schema never contains image
+        bytes, Base64 content, or a data URL.
+    WechatQrUpdate:
+      type: object
+      additionalProperties: false
+      required:
+        - dataUrl
+      properties:
+        dataUrl:
+          type: string
+          minLength: 1
+          maxLength: 699075
+          pattern: '^data:image/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$'
+          description: |
+            PNG or JPEG data URL. Decoded bytes must be non-empty, no larger
+            than 524288 bytes, and match the declared image MIME signature.
     SourceProjections:
       type: object
       additionalProperties: false
@@ -999,7 +1176,7 @@ components:
             - 'null'
         messages:
           type: array
-          description: Ordered reply bubbles. Direct-message clients must preserve this order.
+          description: Ordered reply bubbles. Direct-message clients must preserve this order. An action-only QR reply uses an empty array.
           items:
             type: string
         errorCode:

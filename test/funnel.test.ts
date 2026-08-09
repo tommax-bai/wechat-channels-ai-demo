@@ -118,7 +118,40 @@ describe("FunnelReplyModel", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["send_wechat_qr", "escalate_to_human", "future action!"])(
+  it("preserves direct-message bubbles and accepts the QR action", async () => {
+    const model = createModel(async () => new Response(JSON.stringify({
+      content_list: ["第一条", "  第二条  "],
+      agent_type: "b2c",
+      scenario: "im",
+      action: "send_wechat_qr",
+    })));
+
+    await expect(model.generate(dmInput)).resolves.toMatchObject({
+      text: "第一条\n第二条",
+      messages: ["第一条", "第二条"],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+    });
+  });
+
+  it("keeps an action-only direct-message response replyable", async () => {
+    const model = createModel(async () => new Response(JSON.stringify({
+      content_list: [],
+      agent_type: "b2c",
+      scenario: "im",
+      action: " send_wechat_qr ",
+    })));
+
+    await expect(model.generate(dmInput)).resolves.toMatchObject({
+      text: "",
+      messages: [],
+      disposition: "reply",
+      action: "send_wechat_qr",
+    });
+  });
+
+  it.each(["escalate_to_human", "future action!"])(
     "rejects unsupported action %s before returning any text",
     async (action) => {
       const model = createModel(async () => new Response(JSON.stringify({
@@ -129,10 +162,23 @@ describe("FunnelReplyModel", () => {
       })));
 
       await expect(model.generate(dmInput)).rejects.toMatchObject({
-        code: `funnel_action_${action.replace(/[^a-z0-9_-]/gi, "_")}_unsupported`,
+        code: "funnel_action_unsupported",
       });
     },
   );
+
+  it("rejects an action on an otherwise invalid direct-message response", async () => {
+    const model = createModel(async () => new Response(JSON.stringify({
+      content_list: [],
+      agent_type: "unexpected",
+      scenario: "im",
+      action: "send_wechat_qr",
+    })));
+
+    await expect(model.generate(dmInput)).rejects.toMatchObject({
+      code: "funnel_invalid_dm_response",
+    });
+  });
 
   it("fails closed on HTTP errors without retrying", async () => {
     const fetchImpl = vi.fn(async () => new Response(

@@ -151,20 +151,9 @@ function parseDirectMessageResponse(
   data: unknown,
   requestId: string | undefined,
 ): ReplyModelResult {
-  if (!isRecord(data)) {
-    throw new ModelError("funnel_invalid_dm_response");
-  }
-  if (data.action !== undefined && data.action !== null) {
-    if (typeof data.action !== "string") {
-      throw new ModelError("funnel_invalid_dm_response");
-    }
-    const action = data.action.trim();
-    if (action) {
-      throw new ModelError(`funnel_action_${safeReason(action)}_unsupported`);
-    }
-  }
   if (
-    data.agent_type !== "b2c"
+    !isRecord(data)
+    || data.agent_type !== "b2c"
     || data.scenario !== "im"
     || !Array.isArray(data.content_list)
   ) {
@@ -176,13 +165,26 @@ function parseDirectMessageResponse(
   const messages = (data.content_list as string[])
     .map((item) => item.trim())
     .filter(Boolean);
+  const action = parseDirectMessageAction(data.action);
   return {
     text: messages.join("\n"),
     messages,
-    disposition: messages.length > 0 ? "reply" : "skip",
+    disposition: messages.length > 0 || action ? "reply" : "skip",
+    ...(action ? { action } : {}),
     model: "funnel",
     ...(requestId ? { requestId } : {}),
   };
+}
+
+function parseDirectMessageAction(value: unknown): "send_wechat_qr" | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new ModelError("funnel_invalid_dm_response");
+  }
+  const action = value.trim();
+  if (!action) return undefined;
+  if (action === "send_wechat_qr") return action;
+  throw new ModelError("funnel_action_unsupported");
 }
 
 async function readBounded(response: Response, maxBytes: number): Promise<string> {
@@ -219,10 +221,6 @@ function required(value: string | undefined, errorCode: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function safeReason(value: string): string {
-  return value.replace(/[^a-z0-9_-]/gi, "_").slice(0, 80) || "unknown";
 }
 
 function boundedRequestId(value: string | null): string | undefined {

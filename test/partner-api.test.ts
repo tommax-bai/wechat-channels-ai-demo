@@ -29,6 +29,10 @@ import {
 const PARTNER_KEY = "partner-api-test-key-1234567890abcdef";
 const WRONG_PARTNER_KEY = "wrong-partner-api-key-1234567890abc";
 const CONCRETE_MODEL = "doubao-seed-character-260628";
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString("base64")}`;
+const JPEG_DATA_URL = `data:image/jpeg;base64,${JPEG_BYTES.toString("base64")}`;
 
 interface AccountProjection {
   accountId: string;
@@ -52,6 +56,12 @@ interface AccountProjection {
     provider: "chat-llm" | "funnel";
     providerConfigured: boolean;
     jobNumber: string | null;
+  };
+  wechatQr: {
+    configured: boolean;
+    mimeType: "image/png" | "image/jpeg" | null;
+    byteLength: number | null;
+    updatedAt: string | null;
   };
 }
 
@@ -217,6 +227,12 @@ describe("Partner API", () => {
         providerConfigured: true,
         jobNumber: null,
       },
+      wechatQr: {
+        configured: false,
+        mimeType: null,
+        byteLength: null,
+        updatedAt: null,
+      },
     });
 
     const listed = await fixture.app.inject({
@@ -261,6 +277,278 @@ describe("Partner API", () => {
     });
     expect(afterDelete.statusCode).toBe(404);
     expect(afterDelete.json()).toEqual({ error: "partner_account_not_found" });
+  });
+
+  it("stores separate encrypted account QR assets and never exposes bytes to Partner clients", async () => {
+    const fixture = await createFixture();
+    const first = await createAccount(fixture.app);
+    const second = await createAccount(fixture.app);
+
+    const initial = await fixture.app.inject({
+      method: "GET",
+      url: `/partner/v1/accounts/${first.accountId}/wechat-qr`,
+      headers: partnerHeaders(),
+    });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toEqual({
+      accountId: first.accountId,
+      wechatQr: {
+        configured: false,
+        mimeType: null,
+        byteLength: null,
+        updatedAt: null,
+      },
+    });
+
+    const configured = await fixture.app.inject({
+      method: "PUT",
+      url: `/partner/v1/accounts/${first.accountId}/wechat-qr`,
+      headers: partnerHeaders(),
+      payload: { dataUrl: PNG_DATA_URL },
+    });
+    expect(configured.statusCode).toBe(200);
+    expect(configured.json()).toMatchObject({
+      accountId: first.accountId,
+      wechatQr: {
+        configured: true,
+        mimeType: "image/png",
+        byteLength: PNG_BYTES.byteLength,
+      },
+    });
+    expect(configured.json<{ wechatQr: { updatedAt: string } }>().wechatQr.updatedAt)
+      .toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(configured.body).not.toContain("dataUrl");
+    expect(configured.body).not.toContain(PNG_BYTES.toString("base64"));
+
+    const encrypted = fixture.database.prepare(`
+      SELECT envelope, mime_type AS mimeType, byte_length AS byteLength
+      FROM account_qr_assets WHERE session_id = ?
+    `).get(first.accountId) as {
+      envelope: string;
+      mimeType: string;
+      byteLength: number;
+    };
+    expect(encrypted).toMatchObject({
+      mimeType: "image/png",
+      byteLength: PNG_BYTES.byteLength,
+    });
+    expect(encrypted.envelope).not.toContain(PNG_BYTES.toString("base64"));
+    expect(fixture.secureStore.decryptJson(
+      encrypted.envelope,
+      first.accountId,
+      "account-wechat-qr",
+    )).toEqual({
+      version: 1,
+      mimeType: "image/png",
+      dataBase64: PNG_BYTES.toString("base64"),
+    });
+
+    const firstProjection = await getAccount(fixture.app, first.accountId);
+    expect(firstProjection.wechatQr).toMatchObject({
+      configured: true,
+      mimeType: "image/png",
+      byteLength: PNG_BYTES.byteLength,
+    });
+    expect(JSON.stringify(firstProjection)).not.toContain(PNG_BYTES.toString("base64"));
+    expect((await getAccount(fixture.app, second.accountId)).wechatQr)
+      .toEqual({ configured: false, mimeType: null, byteLength: null, updatedAt: null });
+
+    const invalidReplacement = await fixture.app.inject({
+      method: "PUT",
+      url: `/partner/v1/accounts/${first.accountId}/wechat-qr`,
+      headers: partnerHeaders(),
+      payload: {
+        dataUrl: `data:image/jpeg;base64,${PNG_BYTES.toString("base64")}`,
+      },
+    });
+    expect(invalidReplacement.statusCode).toBe(400);
+    expect(invalidReplacement.json()).toEqual({ error: "account_wechat_qr_invalid" });
+    expect((await getAccount(fixture.app, first.accountId)).wechatQr.mimeType)
+      .toBe("image/png");
+
+    const bodyLimitOversizedReplacement = await fixture.app.inject({
+      method: "PUT",
+      url: `/partner/v1/accounts/${first.accountId}/wechat-qr`,
+      headers: partnerHeaders(),
+      payload: { dataUrl: bodyLimitOversizedDataUrl() },
+    });
+    expect(bodyLimitOversizedReplacement.statusCode).toBe(400);
+    expect(bodyLimitOversizedReplacement.json()).toEqual({
+      error: "account_wechat_qr_too_large",
+    });
+    expect((await getAccount(fixture.app, first.accountId)).wechatQr.mimeType)
+      .toBe("image/png");
+
+    const oversizedPng = Buffer.alloc(512 * 1_024 + 1);
+    PNG_BYTES.copy(oversizedPng);
+    const oversizedReplacement = await fixture.app.inject({
+      method: "PUT",
+      url: `/partner/v1/accounts/${first.accountId}/wechat-qr`,
+      headers: partnerHeaders(),
+      payload: {
+        dataUrl: `data:image/png;base64,${oversizedPng.toString("base64")}`,
+      },
+    });
+    expect(oversizedReplacement.statusCode).toBe(400);
+    expect(oversizedReplacement.json()).toEqual({
+      error: "account_wechat_qr_too_large",
+    });
+    expect((await getAccount(fixture.app, first.accountId)).wechatQr.mimeType)
+      .toBe("image/png");
+
+    const replaced = await fixture.app.inject({
+      method: "PUT",
+      url: `/partner/v1/accounts/${first.accountId}/wechat-qr`,
+      headers: partnerHeaders(),
+      payload: { dataUrl: JPEG_DATA_URL },
+    });
+    expect(replaced.json()).toMatchObject({
+      accountId: first.accountId,
+      wechatQr: {
+        configured: true,
+        mimeType: "image/jpeg",
+        byteLength: JPEG_BYTES.byteLength,
+      },
+    });
+
+    const removed = await fixture.app.inject({
+      method: "DELETE",
+      url: `/partner/v1/accounts/${first.accountId}/wechat-qr`,
+      headers: partnerHeaders(),
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toEqual({
+      accountId: first.accountId,
+      wechatQr: {
+        configured: false,
+        mimeType: null,
+        byteLength: null,
+        updatedAt: null,
+      },
+    });
+    expect((await getAccount(fixture.app, second.accountId)).wechatQr.configured)
+      .toBe(false);
+  });
+
+  it("returns the selected Demo account QR preview only from the same-origin Demo API", async () => {
+    const fixture = await createFixture();
+    const firstBootstrap = await fixture.app.inject({ method: "GET", url: "/api/session" });
+    const firstCookie = requireCookie(firstBootstrap.headers["set-cookie"]);
+    const firstAccountId = firstBootstrap.json<{ sessionId: string }>().sessionId;
+    expect(firstBootstrap.json<{ wechatQr: unknown }>().wechatQr).toEqual({
+      configured: false,
+      mimeType: null,
+      byteLength: null,
+      updatedAt: null,
+    });
+    const secondBootstrap = await fixture.app.inject({ method: "GET", url: "/api/session" });
+    const secondCookie = requireCookie(secondBootstrap.headers["set-cookie"]);
+    const secondAccountId = secondBootstrap.json<{ sessionId: string }>().sessionId;
+
+    const missingTarget = await fixture.app.inject({
+      method: "PUT",
+      url: "/api/session/wechat-qr",
+      headers: { cookie: secondCookie, origin: "http://localhost:4310" },
+      payload: { dataUrl: PNG_DATA_URL },
+    });
+    expect(missingTarget.statusCode).toBe(400);
+    expect(missingTarget.json()).toEqual({ error: "demo_account_target_required" });
+
+    const crossOrigin = await fixture.app.inject({
+      method: "PUT",
+      url: "/api/session/wechat-qr",
+      headers: {
+        cookie: secondCookie,
+        origin: "https://attacker.example",
+        "x-demo-account-id": firstAccountId,
+      },
+      payload: { dataUrl: PNG_DATA_URL },
+    });
+    expect(crossOrigin.statusCode).toBe(403);
+
+    const configured = await fixture.app.inject({
+      method: "PUT",
+      url: "/api/session/wechat-qr",
+      headers: {
+        cookie: secondCookie,
+        origin: "http://localhost:4310",
+        "x-demo-account-id": firstAccountId,
+      },
+      payload: { dataUrl: PNG_DATA_URL },
+    });
+    expect(configured.statusCode).toBe(200);
+    expect(configured.json()).toMatchObject({
+      accountId: firstAccountId,
+      wechatQr: {
+        configured: true,
+        mimeType: "image/png",
+        byteLength: PNG_BYTES.byteLength,
+        dataUrl: PNG_DATA_URL,
+      },
+    });
+
+    const bodyLimitOversizedReplacement = await fixture.app.inject({
+      method: "PUT",
+      url: "/api/session/wechat-qr",
+      headers: {
+        cookie: secondCookie,
+        origin: "http://localhost:4310",
+        "x-demo-account-id": firstAccountId,
+      },
+      payload: { dataUrl: bodyLimitOversizedDataUrl() },
+    });
+    expect(bodyLimitOversizedReplacement.statusCode).toBe(400);
+    expect(bodyLimitOversizedReplacement.json()).toEqual({
+      error: "account_wechat_qr_too_large",
+    });
+
+    const preview = await fixture.app.inject({
+      method: "GET",
+      url: "/api/session/wechat-qr",
+      headers: { cookie: secondCookie, "x-demo-account-id": firstAccountId },
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json<{
+      accountId: string;
+      wechatQr: { dataUrl: string };
+    }>().wechatQr.dataUrl).toBe(PNG_DATA_URL);
+
+    const untouched = await fixture.app.inject({
+      method: "GET",
+      url: "/api/session/wechat-qr",
+      headers: { cookie: firstCookie, "x-demo-account-id": secondAccountId },
+    });
+    expect(untouched.json()).toEqual({
+      accountId: secondAccountId,
+      wechatQr: {
+        configured: false,
+        mimeType: null,
+        byteLength: null,
+        updatedAt: null,
+        dataUrl: null,
+      },
+    });
+
+    const removed = await fixture.app.inject({
+      method: "DELETE",
+      url: "/api/session/wechat-qr",
+      headers: {
+        cookie: secondCookie,
+        origin: "http://localhost:4310",
+        "x-demo-account-id": firstAccountId,
+      },
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toEqual({
+      accountId: firstAccountId,
+      wechatQr: {
+        configured: false,
+        mimeType: null,
+        byteLength: null,
+        updatedAt: null,
+        dataUrl: null,
+      },
+    });
   });
 
   it("distinguishes QR availability, scan detection, login success, and active relogin conflicts", async () => {
@@ -596,6 +884,39 @@ describe("Partner API", () => {
       discoveredAt + 3,
     )).toBe(true);
 
+    const actionOnly = insertInbound(
+      fixture,
+      account.accountId,
+      {
+        ...fakeDm("platform-dm-secret-3", "own-finder-secret", "只发二维码"),
+        occurredAt: discoveredAt + 4,
+      },
+      discoveredAt + 4,
+      true,
+      "33333333-3333-4333-8333-333333333333",
+    );
+    if (!actionOnly.replyId) throw new Error("missing action-only reply fixture");
+    expect(fixture.repository.updateReply(
+      actionOnly.replyId,
+      account.accountId,
+      "confirmed",
+      {
+        outputEnvelope: fixture.secureStore.encryptJson(
+          {
+            text: "",
+            messages: [],
+            disposition: "reply",
+            action: "send_wechat_qr",
+            model: CONCRETE_MODEL,
+          } satisfies ReplyModelResult,
+          account.accountId,
+          `reply:${actionOnly.replyId}`,
+        ),
+        model: CONCRETE_MODEL,
+      },
+      discoveredAt + 5,
+    )).toBe(true);
+
     const first = await fixture.app.inject({
       method: "GET",
       url: `/partner/v1/accounts/${account.accountId}/comments?limit=2`,
@@ -630,7 +951,7 @@ describe("Partner API", () => {
     });
     expect(directMessages.statusCode).toBe(200);
     const dmPage = directMessages.json<ContentPage>();
-    expect(dmPage.items).toHaveLength(2);
+    expect(dmPage.items).toHaveLength(3);
     expect(dmPage.items.every((item) => item.source === "dm")).toBe(true);
     expect(dmPage.items.find((item) => item.text === "需要分段回复")?.reply)
       .toEqual({
@@ -639,6 +960,14 @@ describe("Partner API", () => {
         messages: ["第一条", "第二条"],
         errorCode: null,
         updatedAt: new Date(discoveredAt + 3).toISOString(),
+      });
+    expect(dmPage.items.find((item) => item.text === "只发二维码")?.reply)
+      .toEqual({
+        state: "confirmed",
+        text: "",
+        messages: [],
+        errorCode: null,
+        updatedAt: new Date(discoveredAt + 5).toISOString(),
       });
 
     const serializedContent = JSON.stringify({ firstPage, secondPage, dmPage });
@@ -739,6 +1068,13 @@ function partnerHeaders(key = PARTNER_KEY): { authorization: string } {
   return { authorization: `Bearer ${key}` };
 }
 
+function requireCookie(value: string | string[] | undefined): string {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const cookie = raw?.split(";", 1)[0];
+  if (!cookie) throw new Error("missing Demo session cookie");
+  return cookie;
+}
+
 function expectPartnerHeaders(headers: OutgoingHttpHeaders): void {
   expect(headers["cache-control"]).toBe("no-store");
   expect(headers["set-cookie"]).toBeUndefined();
@@ -827,6 +1163,10 @@ function insertInbound(
 function requireCursor(page: ContentPage): string {
   if (!page.nextCursor) throw new Error("missing next cursor");
   return page.nextCursor;
+}
+
+function bodyLimitOversizedDataUrl(): string {
+  return `data:image/png;base64,${"A".repeat(1_100_000)}`;
 }
 
 function expectNoSensitiveKeys(value: unknown): void {

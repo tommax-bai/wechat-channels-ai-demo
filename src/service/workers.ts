@@ -1,15 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { parseStoredAccountWechatQr } from "../account-wechat-qr.js";
 import type { AppConfig } from "../config.js";
 import type { SecureStore } from "../crypto.js";
 import type { ReplyModelRegistry } from "../model/reply-model.js";
 import { ModelError } from "../model/reply-model.js";
 import type {
+  AccountQrAssetRow,
   DemoRepository,
   ReplyRow,
   SessionRow,
   SourceRow,
 } from "../repository.js";
 import type {
+  AccountQrAsset,
   NormalizedInboundItem,
   PlatformSession,
   ReplyModelResult,
@@ -442,6 +445,8 @@ export class WorkerCoordinator {
     );
     let generated: ReplyModelResult;
     let messages: string[];
+    let qrAsset: AccountQrAsset | null = null;
+    let qrAssetRevision: string | null = null;
     try {
       const model = this.models[generationSession.replyProvider];
       generated = await model.generate({
@@ -471,6 +476,41 @@ export class WorkerCoordinator {
       if (item.source === "comment" && messages.length > 1) {
         throw new ModelError("model_invalid_comment_messages");
       }
+      if (generated.action) {
+        if (
+          generated.action !== "send_wechat_qr"
+          || generationSession.replyProvider !== "funnel"
+          || item.source !== "dm"
+          || item.target.kind !== "dm"
+        ) {
+          throw new ModelError("model_invalid_reply_action", generated.requestId);
+        }
+        const row = this.repository.getAccountQrAsset(job.sessionId);
+        if (!row) {
+          throw new ModelError(
+            "account_wechat_qr_not_configured",
+            generated.requestId,
+          );
+        }
+        try {
+          const storedQr = this.secureStore.decryptJson<unknown>(
+            row.envelope,
+            job.sessionId,
+            "account-wechat-qr",
+          );
+          const parsedQr = parseStoredAccountWechatQr(storedQr);
+          if (
+            parsedQr.mimeType !== row.mimeType
+            || parsedQr.bytes.byteLength !== row.byteLength
+          ) {
+            throw new Error("account_wechat_qr_invalid");
+          }
+          qrAsset = { mimeType: parsedQr.mimeType, bytes: parsedQr.bytes };
+          qrAssetRevision = this.accountQrAssetRevision(row);
+        } catch {
+          throw new ModelError("account_wechat_qr_invalid", generated.requestId);
+        }
+      }
     } catch (error) {
       this.repository.updateReply(
         job.id,
@@ -491,7 +531,7 @@ export class WorkerCoordinator {
       job.sessionId,
       `reply:${job.id}`,
     );
-    if (messages.length === 0) {
+    if (messages.length === 0 && !qrAsset) {
       this.repository.updateReply(
         job.id,
         job.sessionId,
@@ -551,22 +591,52 @@ export class WorkerCoordinator {
         return;
       }
       const receipts: string[] = [];
-      for (const [index, text] of messages.entries()) {
+      const isDispatchAuthorized = (): boolean =>
+        this.repository.isSendAuthorized(
+          job.id,
+          job.sessionId,
+          dispatchSession.authGeneration,
+          job.runGeneration,
+          Date.now(),
+        )
+        && (
+          qrAssetRevision === null
+          || this.currentAccountQrAssetRevision(job.sessionId) === qrAssetRevision
+        );
+      const dispatches: Array<() => Promise<WechatSendResult>> = messages.map(
+        (text, index) => () => this.wechat.sendReply(
+          freshStored.value,
+          item.target,
+          text,
+          replyClientId(job.platformClientId, index),
+          isDispatchAuthorized,
+        ),
+      );
+      if (qrAsset) {
+        if (item.target.kind !== "dm") {
+          this.repository.updateReply(
+            job.id,
+            job.sessionId,
+            "failed",
+            { errorCode: "model_invalid_reply_action" },
+            Date.now(),
+          );
+          return;
+        }
+        const target = item.target;
+        const asset = qrAsset;
+        dispatches.push(() => this.wechat.sendImageReply(
+          freshStored.value,
+          target,
+          asset,
+          replyClientId(job.platformClientId, messages.length),
+          isDispatchAuthorized,
+        ));
+      }
+      for (const dispatch of dispatches) {
         let result: WechatSendResult;
         try {
-          result = await this.wechat.sendReply(
-            freshStored.value,
-            item.target,
-            text,
-            index === 0 ? job.platformClientId : `${job.platformClientId}-${index + 1}`,
-            () => this.repository.isSendAuthorized(
-              job.id,
-              job.sessionId,
-              dispatchSession.authGeneration,
-              job.runGeneration,
-              Date.now(),
-            ),
-          );
+          result = await dispatch();
         } catch (error) {
           const ambiguous = error instanceof WechatApiError && error.ambiguous;
           const code = safeErrorCode(error);
@@ -662,6 +732,23 @@ export class WorkerCoordinator {
       : null;
   }
 
+  private currentAccountQrAssetRevision(sessionId: string): string | null {
+    const row = this.repository.getAccountQrAsset(sessionId);
+    return row ? this.accountQrAssetRevision(row) : null;
+  }
+
+  private accountQrAssetRevision(row: AccountQrAssetRow): string {
+    return this.secureStore.keyedHash(
+      JSON.stringify([
+        row.envelope,
+        row.mimeType,
+        row.byteLength,
+        row.updatedAt,
+      ]),
+      `account-wechat-qr-revision:${row.sessionId}`,
+    );
+  }
+
   private savePlatformSession(
     sessionId: string,
     authGeneration: number,
@@ -713,6 +800,10 @@ export class WorkerCoordinator {
       }
     }
   }
+}
+
+function replyClientId(base: string, index: number): string {
+  return index === 0 ? base : `${base}-${index + 1}`;
 }
 
 function safeErrorCode(error: unknown): string {

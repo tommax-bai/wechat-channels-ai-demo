@@ -1,4 +1,9 @@
 import QRCode from "qrcode";
+import {
+  parseAccountWechatQrDataUrl,
+  parseStoredAccountWechatQr,
+  storedAccountWechatQr,
+} from "../account-wechat-qr.js";
 import type { AppConfig } from "../config.js";
 import {
   createSessionToken,
@@ -12,6 +17,9 @@ import {
   type SessionRow,
 } from "../repository.js";
 import type {
+  AccountQrAsset,
+  AccountWechatQrMetadata,
+  AccountWechatQrPreview,
   AuthState,
   InboundSource,
   NormalizedInboundItem,
@@ -105,6 +113,7 @@ export class SessionService {
         automationEnabled: session.automationEnabled,
         replyProvider: session.replyProvider,
         funnelJobNumber: session.funnelJobNumber,
+        wechatQr: this.getAccountWechatQrMetadata(session.id),
       }];
     });
   }
@@ -192,6 +201,74 @@ export class SessionService {
     return updated;
   }
 
+  getAccountWechatQrMetadata(sessionId: string): AccountWechatQrMetadata {
+    const row = this.repository.getAccountQrAsset(sessionId);
+    return row
+      ? {
+          configured: true,
+          mimeType: row.mimeType,
+          byteLength: row.byteLength,
+          updatedAt: row.updatedAt,
+        }
+      : emptyAccountWechatQrMetadata();
+  }
+
+  getAccountWechatQr(session: SessionRow): AccountWechatQrPreview {
+    const row = this.repository.getAccountQrAsset(session.id);
+    if (!row) return { ...emptyAccountWechatQrMetadata(), dataUrl: null };
+    const asset = this.decryptAccountWechatQr(session.id, row.envelope);
+    if (asset.mimeType !== row.mimeType || asset.bytes.byteLength !== row.byteLength) {
+      throw new Error("account_wechat_qr_invalid");
+    }
+    return {
+      configured: true,
+      mimeType: row.mimeType,
+      byteLength: row.byteLength,
+      updatedAt: row.updatedAt,
+      dataUrl: `data:${asset.mimeType};base64,${Buffer.from(asset.bytes).toString("base64")}`,
+    };
+  }
+
+  setAccountWechatQr(session: SessionRow, dataUrl: string): AccountWechatQrPreview {
+    const parsed = parseAccountWechatQrDataUrl(dataUrl);
+    const previous = this.repository.getAccountQrAsset(session.id);
+    const now = Math.max(Date.now(), (previous?.updatedAt ?? 0) + 1);
+    const envelope = this.secureStore.encryptJson(
+      storedAccountWechatQr(parsed),
+      session.id,
+      "account-wechat-qr",
+    );
+    const row = this.repository.upsertAccountQrAsset({
+      sessionId: session.id,
+      envelope,
+      mimeType: parsed.mimeType,
+      byteLength: parsed.bytes.byteLength,
+      updatedAt: now,
+    });
+    return {
+      configured: true,
+      mimeType: row.mimeType,
+      byteLength: row.byteLength,
+      updatedAt: row.updatedAt,
+      dataUrl: parsed.dataUrl,
+    };
+  }
+
+  deleteAccountWechatQr(session: SessionRow): AccountWechatQrPreview {
+    this.repository.deleteAccountQrAsset(session.id, Date.now());
+    return { ...emptyAccountWechatQrMetadata(), dataUrl: null };
+  }
+
+  readAccountWechatQrAsset(sessionId: string): AccountQrAsset | null {
+    const row = this.repository.getAccountQrAsset(sessionId);
+    if (!row) return null;
+    const asset = this.decryptAccountWechatQr(sessionId, row.envelope);
+    if (asset.mimeType !== row.mimeType || asset.bytes.byteLength !== row.byteLength) {
+      throw new Error("account_wechat_qr_invalid");
+    }
+    return asset;
+  }
+
   logout(session: SessionRow): void {
     const deleted = this.repository.deleteSession(session.id);
     if (!deleted && this.repository.getSession(session.id)) {
@@ -233,12 +310,15 @@ export class SessionService {
       );
       const reply = this.repository.getReplyForInbound(row.id, current.id);
       let replyText: string | null = null;
+      let replyAction: ReplyModelResult["action"] | null = null;
       if (reply?.outputEnvelope) {
-        replyText = this.secureStore.decryptJson<ReplyModelResult>(
+        const output = this.secureStore.decryptJson<ReplyModelResult>(
           reply.outputEnvelope,
           current.id,
           `reply:${reply.id}`,
-        ).text;
+        );
+        replyText = output.text;
+        replyAction = output.action ?? null;
       }
       return {
         id: row.id,
@@ -248,11 +328,13 @@ export class SessionService {
         occurredAt: row.occurredAt,
         historical: row.historical,
         replyText,
+        replyAction,
         replyState: reply?.state ?? null,
         replyErrorCode: reply?.errorCode ?? null,
       };
     });
     return {
+      sessionId: current.id,
       authState: current.authState,
       authErrorCode: current.lastErrorCode,
       accountDisplayName,
@@ -261,6 +343,7 @@ export class SessionService {
       automationEnabled: current.automationEnabled,
       replyProvider: current.replyProvider,
       funnelJobNumber: current.funnelJobNumber,
+      wechatQr: this.getAccountWechatQrMetadata(current.id),
       sources,
       timeline,
       service: {
@@ -325,7 +408,7 @@ export class SessionService {
             state: reply.state,
             text: output?.text ?? null,
             messages: output
-              ? output.messages?.length ? output.messages : [output.text]
+              ? output.messages ?? (output.text ? [output.text] : [])
               : [],
             errorCode: reply.errorCode,
             updatedAt: reply.updatedAt,
@@ -371,12 +454,35 @@ export class SessionService {
       : Boolean(this.config.funnelBaseUrl && session.funnelJobNumber);
   }
 
+  private decryptAccountWechatQr(sessionId: string, envelope: string): AccountQrAsset {
+    try {
+      const stored = this.secureStore.decryptJson<unknown>(
+        envelope,
+        sessionId,
+        "account-wechat-qr",
+      );
+      const parsed = parseStoredAccountWechatQr(stored);
+      return { mimeType: parsed.mimeType, bytes: parsed.bytes };
+    } catch {
+      throw new Error("account_wechat_qr_invalid");
+    }
+  }
+
   readCredential(sessionId: string): StoredCredential | null {
     const envelope = this.repository.getCredentialEnvelope(sessionId);
     return envelope
       ? this.secureStore.decryptJson<StoredCredential>(envelope, sessionId, "credentials")
       : null;
   }
+}
+
+function emptyAccountWechatQrMetadata(): AccountWechatQrMetadata {
+  return {
+    configured: false,
+    mimeType: null,
+    byteLength: null,
+    updatedAt: null,
+  };
 }
 
 export class SessionLimitError extends Error {

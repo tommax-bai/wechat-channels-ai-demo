@@ -19,6 +19,10 @@ import {
   testConfig,
 } from "./helpers.js";
 
+const TEST_ACCOUNT_WECHAT_QR =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const REPLACEMENT_ACCOUNT_WECHAT_QR = "data:image/jpeg;base64,/9j/";
+
 describe("multi-user demo flow", () => {
   let app: FastifyInstance | undefined;
   let database: SqliteDatabase | undefined;
@@ -455,6 +459,271 @@ describe("multi-user demo flow", () => {
     await workers.runOnce();
     expect(funnelModel.calls[1]).toMatchObject({ jobNumber: "job-99" });
     expect(funnelModel.calls[1]?.conversationId).not.toBe(firstConversationId);
+  });
+
+  it("sends the configured account QR after ordered Funnel DM bubbles", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    const sessionId = requireSessionId(database);
+    repository.setReplyProvider(sessionId, "funnel", "job-42", Date.now());
+    await configureAccountWechatQr(server, visitor.cookie);
+    funnelModel.result = {
+      text: "第一条\n我把二维码发你",
+      messages: ["第一条", "我把二维码发你"],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+      requestId: "funnel-qr-request-1",
+    };
+    const inbound = fakeDm("funnel-qr-1", "finder-1", "发二维码吧");
+    if (inbound.target.kind === "dm") {
+      inbound.target.sessionId = "qr-conversation-1";
+    }
+    gateway.newItems.set("finder-1", [inbound]);
+
+    await workers.runOnce();
+
+    expect(gateway.sends.map((send) => send.text)).toEqual([
+      "第一条",
+      "我把二维码发你",
+    ]);
+    expect(gateway.imageSends).toHaveLength(1);
+    expect(gateway.imageSends[0]).toMatchObject({
+      target: { kind: "dm", sessionId: "qr-conversation-1" },
+      asset: { mimeType: "image/png" },
+    });
+    const baseClientId = gateway.sends[0]?.clientId;
+    expect(baseClientId).toBeTruthy();
+    expect(gateway.sends[1]?.clientId).toBe(`${baseClientId}-2`);
+    expect(gateway.imageSends[0]?.clientId).toBe(`${baseClientId}-3`);
+    expect(Buffer.from(gateway.imageSends[0]?.asset.bytes ?? []).toString("base64"))
+      .toBe(TEST_ACCOUNT_WECHAT_QR.split(",", 2)[1]);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "发二维码吧")).toMatchObject({
+        replyText: "第一条\n我把二维码发你",
+        replyState: "confirmed",
+        replyErrorCode: null,
+      });
+  });
+
+  it("fails a Funnel QR action before sending text when the account QR is missing", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    repository.setReplyProvider(
+      requireSessionId(database),
+      "funnel",
+      "job-42",
+      Date.now(),
+    );
+    funnelModel.result = {
+      text: "我把二维码发你",
+      messages: ["我把二维码发你"],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+      requestId: "funnel-qr-missing-request",
+    };
+    gateway.newItems.set("finder-1", [
+      fakeDm("funnel-qr-missing", "finder-1", "二维码呢"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(gateway.sends).toHaveLength(0);
+    expect(gateway.imageSends).toHaveLength(0);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "二维码呢")).toMatchObject({
+        replyState: "failed",
+        replyErrorCode: "account_wechat_qr_not_configured",
+      });
+    expect(database?.prepare(`
+      SELECT provider_request_id AS requestId
+      FROM reply_jobs WHERE error_code = 'account_wechat_qr_not_configured'
+    `).get()).toEqual({ requestId: "funnel-qr-missing-request" });
+  });
+
+  it("does not skip an action-only QR reply and does not retry an ambiguous image send", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    repository.setReplyProvider(
+      requireSessionId(database),
+      "funnel",
+      "job-42",
+      Date.now(),
+    );
+    await configureAccountWechatQr(server, visitor.cookie);
+    funnelModel.result = {
+      text: "",
+      messages: [],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+    };
+    gateway.imageSendError = new WechatApiError(
+      "image_send_timeout",
+      "dmSendText",
+      true,
+    );
+    gateway.newItems.set("finder-1", [
+      fakeDm("funnel-qr-action-only", "finder-1", "直接发吧"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(gateway.sends).toHaveLength(0);
+    expect(gateway.imageSends).toHaveLength(1);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "直接发吧")).toMatchObject({
+        replyText: "",
+        replyAction: "send_wechat_qr",
+        replyState: "submitted_unknown",
+        replyErrorCode: "image_send_timeout",
+      });
+    await workers.runOnce();
+    expect(gateway.imageSends).toHaveLength(1);
+    expect(funnelModel.calls).toHaveLength(1);
+  });
+
+  it("records a text-confirmed QR upload failure as submitted unknown without replay", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    repository.setReplyProvider(
+      requireSessionId(database),
+      "funnel",
+      "job-42",
+      Date.now(),
+    );
+    await configureAccountWechatQr(server, visitor.cookie);
+    funnelModel.result = {
+      text: "我把二维码发你",
+      messages: ["我把二维码发你"],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+    };
+    gateway.imageSendError = new WechatApiError(
+      "image_upload_rejected",
+      "dmUploadMedia",
+      false,
+    );
+    gateway.newItems.set("finder-1", [
+      fakeDm("funnel-qr-partial", "finder-1", "发一下二维码"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(gateway.sends.map((send) => send.text)).toEqual(["我把二维码发你"]);
+    expect(gateway.imageSends).toHaveLength(1);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "发一下二维码")).toMatchObject({
+        replyState: "submitted_unknown",
+        replyErrorCode: "image_upload_rejected",
+      });
+    await workers.runOnce();
+    expect(gateway.sends).toHaveLength(1);
+    expect(gateway.imageSends).toHaveLength(1);
+  });
+
+  it("does not send a prevalidated QR after the account asset is deleted", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    const sessionId = requireSessionId(database);
+    repository.setReplyProvider(sessionId, "funnel", "job-42", Date.now());
+    await configureAccountWechatQr(server, visitor.cookie);
+    funnelModel.result = {
+      text: "",
+      messages: [],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+    };
+    gateway.newItems.set("finder-1", [
+      fakeDm("funnel-qr-deleted-before-send", "finder-1", "把二维码发来"),
+    ]);
+
+    const gate = gateway.blockNextSend();
+    const pendingRun = workers.runOnce();
+    await gate.started;
+    const deleted = await server.inject({
+      method: "DELETE",
+      url: "/api/session/wechat-qr",
+      headers: {
+        cookie: visitor.cookie,
+        origin: "http://localhost:4310",
+        "x-demo-account-id": sessionId,
+      },
+    });
+    expect(deleted.statusCode).toBe(200);
+    gate.release();
+    await pendingRun;
+
+    expect(gateway.sends).toHaveLength(0);
+    expect(gateway.imageSends).toHaveLength(0);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "把二维码发来")).toMatchObject({
+        replyState: "failed",
+        replyErrorCode: "dispatch_not_authorized",
+      });
+    await workers.runOnce();
+    expect(gateway.imageSends).toHaveLength(0);
+  });
+
+  it("stops remaining bubbles and the old QR when the account asset changes", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    const sessionId = requireSessionId(database);
+    repository.setReplyProvider(sessionId, "funnel", "job-42", Date.now());
+    await configureAccountWechatQr(server, visitor.cookie);
+    funnelModel.result = {
+      text: "第一条\n二维码马上发你",
+      messages: ["第一条", "二维码马上发你"],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+    };
+    gateway.newItems.set("finder-1", [
+      fakeDm("funnel-qr-replaced-before-image", "finder-1", "发新的二维码"),
+    ]);
+
+    const gate = gateway.blockNextSendAfterDispatch();
+    const pendingRun = workers.runOnce();
+    await gate.started;
+    const replaced = await server.inject({
+      method: "PUT",
+      url: "/api/session/wechat-qr",
+      headers: {
+        cookie: visitor.cookie,
+        origin: "http://localhost:4310",
+        "x-demo-account-id": sessionId,
+      },
+      payload: { dataUrl: REPLACEMENT_ACCOUNT_WECHAT_QR },
+    });
+    expect(replaced.statusCode).toBe(200);
+    gate.release();
+    await pendingRun;
+
+    expect(gateway.sends.map((send) => send.text)).toEqual(["第一条"]);
+    expect(gateway.imageSends).toHaveLength(0);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "发新的二维码")).toMatchObject({
+        replyState: "submitted_unknown",
+        replyErrorCode: "dispatch_not_authorized",
+      });
+    await workers.runOnce();
+    expect(gateway.sends).toHaveLength(1);
+    expect(gateway.imageSends).toHaveLength(0);
   });
 
   it("records an empty funnel comment reply as skipped without a platform write", async () => {
@@ -942,6 +1211,31 @@ async function startLogin(app: FastifyInstance, cookie: string): Promise<void> {
     payload: {},
   });
   expect(response.statusCode).toBe(200);
+}
+
+async function configureAccountWechatQr(
+  app: FastifyInstance,
+  cookie: string,
+): Promise<void> {
+  const current = await snapshot(app, cookie);
+  const response = await app.inject({
+    method: "PUT",
+    url: "/api/session/wechat-qr",
+    headers: {
+      cookie,
+      origin: "http://localhost:4310",
+      "x-demo-account-id": current.sessionId,
+    },
+    payload: { dataUrl: TEST_ACCOUNT_WECHAT_QR },
+  });
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toMatchObject({
+    accountId: current.sessionId,
+    wechatQr: {
+      configured: true,
+      mimeType: "image/png",
+    },
+  });
 }
 
 async function snapshot(app: FastifyInstance, cookie: string): Promise<SessionSnapshot> {

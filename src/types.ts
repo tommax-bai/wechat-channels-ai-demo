@@ -65,6 +65,22 @@ export interface DirectMessageTarget {
   toUsername: string;
 }
 
+export interface AccountQrAsset {
+  mimeType: "image/png" | "image/jpeg";
+  bytes: Uint8Array;
+}
+
+export interface AccountWechatQrMetadata {
+  configured: boolean;
+  mimeType: "image/png" | "image/jpeg" | null;
+  byteLength: number | null;
+  updatedAt: number | null;
+}
+
+export interface AccountWechatQrPreview extends AccountWechatQrMetadata {
+  dataUrl: string | null;
+}
+
 export interface CommentTarget {
   kind: "comment";
   postId: string;
@@ -99,6 +115,7 @@ export interface ReplyModelResult {
   text: string;
   messages?: string[];
   disposition?: "reply" | "skip";
+  action?: "send_wechat_qr";
   model: string;
   requestId?: string;
   usage?: {
@@ -109,6 +126,7 @@ export interface ReplyModelResult {
 }
 
 export interface SessionSnapshot {
+  sessionId: string;
   authState: AuthState;
   authErrorCode: string | null;
   accountDisplayName: string | null;
@@ -117,6 +135,7 @@ export interface SessionSnapshot {
   automationEnabled: boolean;
   replyProvider: ReplyProvider;
   funnelJobNumber: string | null;
+  wechatQr: AccountWechatQrMetadata;
   sources: Array<{
     source: InboundSource;
     state: SourceState;
@@ -132,6 +151,7 @@ export interface SessionSnapshot {
     occurredAt: number;
     historical: boolean;
     replyText: string | null;
+    replyAction: "send_wechat_qr" | null;
     replyState: ReplyState | null;
     replyErrorCode: string | null;
   }>;
@@ -151,6 +171,7 @@ export interface SharedSessionSummary {
   automationEnabled: boolean;
   replyProvider: ReplyProvider;
   funnelJobNumber: string | null;
+  wechatQr: AccountWechatQrMetadata;
 }
 
 export interface PartnerContentCursor {

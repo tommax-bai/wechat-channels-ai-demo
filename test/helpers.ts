@@ -6,6 +6,8 @@ import { CookieJar } from "tough-cookie";
 import type { AppConfig } from "../src/config.js";
 import type { ReplyModel } from "../src/model/reply-model.js";
 import type {
+  AccountQrAsset,
+  DirectMessageTarget,
   NormalizedInboundItem,
   PlatformSession,
   ReplyModelInput,
@@ -80,6 +82,12 @@ export class FakeReplyModel implements ReplyModel {
 
 export class FakeWechatGateway implements WechatGateway {
   readonly sends: Array<{ session: PlatformSession; target: ReplyTarget; text: string; clientId: string }> = [];
+  readonly imageSends: Array<{
+    session: PlatformSession;
+    target: DirectMessageTarget;
+    asset: AccountQrAsset;
+    clientId: string;
+  }> = [];
   readonly newItems = new Map<string, NormalizedInboundItem[]>();
   readonly newComments = new Map<string, NormalizedInboundItem[]>();
   accountName: string | null = null;
@@ -87,6 +95,7 @@ export class FakeWechatGateway implements WechatGateway {
   captureCalls = 0;
   dmSyncError: WechatApiError | null = null;
   sendError: WechatApiError | null = null;
+  imageSendError: WechatApiError | null = null;
   sendErrors: Array<WechatApiError | null> = [];
   historyPagesRemaining = 1;
   private readonly tokenAccounts = new Map<string, string>();
@@ -202,6 +211,42 @@ export class FakeWechatGateway implements WechatGateway {
     if (scriptedError) throw scriptedError;
     if (this.sendError) throw this.sendError;
     return { accepted: true, externalId: `sent-${this.sends.length}` };
+  }
+
+  async sendImageReply(
+    session: PlatformSession,
+    target: DirectMessageTarget,
+    asset: AccountQrAsset,
+    clientId: string,
+    beforeDispatch?: () => boolean,
+  ): Promise<WechatSendResult> {
+    const gate = this.sendGate;
+    if (gate) {
+      this.sendGate = null;
+      gate.markStarted();
+      await gate.wait;
+    }
+    if (beforeDispatch && !beforeDispatch()) {
+      throw new WechatApiError("dispatch_not_authorized", "dmSendText", false);
+    }
+    this.imageSends.push({
+      session,
+      target,
+      asset: { mimeType: asset.mimeType, bytes: Buffer.from(asset.bytes) },
+      clientId,
+    });
+    setSessionCookie(session, "send_refresh", "1");
+    const afterDispatchGate = this.sendAfterDispatchGate;
+    if (afterDispatchGate) {
+      this.sendAfterDispatchGate = null;
+      afterDispatchGate.markStarted();
+      await afterDispatchGate.wait;
+    }
+    if (this.imageSendError) throw this.imageSendError;
+    return {
+      accepted: true,
+      externalId: `sent-image-${this.imageSends.length}`,
+    };
   }
 
   blockNextDmSync(): GateHandle {

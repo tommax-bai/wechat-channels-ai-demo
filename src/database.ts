@@ -39,6 +39,14 @@ export function openDatabase(path: string): SqliteDatabase {
       updated_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS account_qr_assets (
+      session_id TEXT PRIMARY KEY REFERENCES demo_sessions(id) ON DELETE CASCADE,
+      envelope TEXT NOT NULL,
+      mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg')),
+      byte_length INTEGER NOT NULL CHECK (byte_length BETWEEN 1 AND ${512 * 1_024}),
+      updated_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS source_states (
       session_id TEXT NOT NULL REFERENCES demo_sessions(id) ON DELETE CASCADE,
       source TEXT NOT NULL CHECK (source IN ('dm', 'comment')),

@@ -63,5 +63,38 @@ describe("authenticated session persistence migration", () => {
       replyProvider: "chat-llm",
       funnelJobNumber: null,
     });
+    expect(database.prepare("PRAGMA table_info(account_qr_assets)").all())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "session_id", pk: 1 }),
+        expect.objectContaining({ name: "envelope", notnull: 1 }),
+        expect.objectContaining({ name: "mime_type", notnull: 1 }),
+        expect.objectContaining({ name: "byte_length", notnull: 1 }),
+        expect.objectContaining({ name: "updated_at", notnull: 1 }),
+      ]));
+  });
+
+  it("creates the account QR table idempotently and cascades account deletion", () => {
+    const temporary = temporaryDirectory();
+    cleanup = temporary.cleanup;
+    const path = `${temporary.path}/account-qr.sqlite`;
+    database = openDatabase(path);
+    database.prepare(`
+      INSERT INTO demo_sessions (
+        id, created_at, updated_at, expires_at, auth_state, automation_enabled
+      ) VALUES ('account-1', 1, 1, 100, 'new', 0)
+    `).run();
+    database.prepare(`
+      INSERT INTO account_qr_assets (
+        session_id, envelope, mime_type, byte_length, updated_at
+      ) VALUES ('account-1', 'encrypted-envelope', 'image/png', 8, 2)
+    `).run();
+    database.close();
+
+    database = openDatabase(path);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM account_qr_assets").get())
+      .toEqual({ count: 1 });
+    database.prepare("DELETE FROM demo_sessions WHERE id = 'account-1'").run();
+    expect(database.prepare("SELECT COUNT(*) AS count FROM account_qr_assets").get())
+      .toEqual({ count: 0 });
   });
 });

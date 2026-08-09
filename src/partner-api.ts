@@ -5,6 +5,7 @@ import type { AppConfig } from "./config.js";
 import type { DemoRepository, SessionRow } from "./repository.js";
 import type { SessionService } from "./service/session-service.js";
 import type {
+  AccountWechatQrMetadata,
   AuthState,
   InboundSource,
   PartnerContentCursor,
@@ -57,6 +58,9 @@ const automationBody = z.object({ enabled: z.boolean() }).strict();
 const replySettingsBody = z.object({
   provider: z.enum(["chat-llm", "funnel"]),
   jobNumber: z.string().max(128).optional(),
+}).strict();
+const accountWechatQrBody = z.object({
+  dataUrl: z.string().min(1),
 }).strict();
 const contentQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -164,6 +168,37 @@ export function registerPartnerApi(
       return projectAccount(deps, updated);
     });
 
+    partner.get("/accounts/:accountId/wechat-qr", async (request) => {
+      const account = requirePartnerAccount(request, deps.sessions);
+      return {
+        accountId: account.id,
+        wechatQr: projectAccountWechatQr(
+          deps.sessions.getAccountWechatQrMetadata(account.id),
+        ),
+      };
+    });
+
+    partner.put("/accounts/:accountId/wechat-qr", async (request) => {
+      const account = requirePartnerAccount(request, deps.sessions);
+      const body = accountWechatQrBody.parse(request.body);
+      return {
+        accountId: account.id,
+        wechatQr: projectAccountWechatQr(
+          deps.sessions.setAccountWechatQr(account, body.dataUrl),
+        ),
+      };
+    });
+
+    partner.delete("/accounts/:accountId/wechat-qr", async (request) => {
+      const account = requirePartnerAccount(request, deps.sessions);
+      return {
+        accountId: account.id,
+        wechatQr: projectAccountWechatQr(
+          deps.sessions.deleteAccountWechatQr(account),
+        ),
+      };
+    });
+
     partner.get("/accounts/:accountId/comments", async (request) => {
       return contentPage(request, deps, "comment");
     });
@@ -241,6 +276,7 @@ async function projectAccount(
     providerConfigured: boolean;
     jobNumber: string | null;
   };
+  wechatQr: PublicAccountWechatQr;
   sources: {
     comments: PublicSource;
     directMessages: PublicSource;
@@ -267,10 +303,29 @@ async function projectAccount(
         ? snapshot.funnelJobNumber
         : null,
     },
+    wechatQr: projectAccountWechatQr(snapshot.wechatQr),
     sources: {
       comments: projectSource(comments),
       directMessages: projectSource(directMessages),
     },
+  };
+}
+
+interface PublicAccountWechatQr {
+  configured: boolean;
+  mimeType: "image/png" | "image/jpeg" | null;
+  byteLength: number | null;
+  updatedAt: string | null;
+}
+
+function projectAccountWechatQr(
+  metadata: AccountWechatQrMetadata,
+): PublicAccountWechatQr {
+  return {
+    configured: metadata.configured,
+    mimeType: metadata.mimeType,
+    byteLength: metadata.byteLength,
+    updatedAt: nullableIsoTimestamp(metadata.updatedAt),
   };
 }
 

@@ -4,6 +4,7 @@ import {
   type SqliteDatabase,
 } from "./database.js";
 import type {
+  AccountQrAsset,
   AuthState,
   InboundSource,
   ReplyProvider,
@@ -65,6 +66,14 @@ export interface ReplyRow {
   updatedAt: number;
 }
 
+export interface AccountQrAssetRow {
+  sessionId: string;
+  envelope: string;
+  mimeType: AccountQrAsset["mimeType"];
+  byteLength: number;
+  updatedAt: number;
+}
+
 interface RawSession {
   id: string;
   created_at: number;
@@ -116,6 +125,14 @@ interface RawReply {
   run_generation: number;
   error_code: string | null;
   created_at: number;
+  updated_at: number;
+}
+
+interface RawAccountQrAsset {
+  session_id: string;
+  envelope: string;
+  mime_type: AccountQrAsset["mimeType"];
+  byte_length: number;
   updated_at: number;
 }
 
@@ -367,6 +384,55 @@ export class DemoRepository {
       .run(provider, funnelJobNumber, now, id);
     if (result.changes > 0) this.appendEvent(id, "settings.updated", null, now);
     return this.getSession(id);
+  }
+
+  getAccountQrAsset(sessionId: string): AccountQrAssetRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM account_qr_assets WHERE session_id = ?")
+      .get(sessionId) as RawAccountQrAsset | undefined;
+    return row ? mapAccountQrAsset(row) : null;
+  }
+
+  upsertAccountQrAsset(input: AccountQrAssetRow): AccountQrAssetRow {
+    return this.db.transaction(() => {
+      this.db
+        .prepare(`
+          INSERT INTO account_qr_assets (
+            session_id, envelope, mime_type, byte_length, updated_at
+          ) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(session_id) DO UPDATE SET
+            envelope = excluded.envelope,
+            mime_type = excluded.mime_type,
+            byte_length = excluded.byte_length,
+            updated_at = excluded.updated_at
+        `)
+        .run(
+          input.sessionId,
+          input.envelope,
+          input.mimeType,
+          input.byteLength,
+          input.updatedAt,
+        );
+      this.db
+        .prepare("UPDATE demo_sessions SET updated_at = ? WHERE id = ?")
+        .run(input.updatedAt, input.sessionId);
+      this.appendEvent(input.sessionId, "settings.updated", "wechat-qr", input.updatedAt);
+      return requireRow(this.getAccountQrAsset(input.sessionId), "account QR asset");
+    })();
+  }
+
+  deleteAccountQrAsset(sessionId: string, now: number): boolean {
+    return this.db.transaction(() => {
+      const deleted = this.db
+        .prepare("DELETE FROM account_qr_assets WHERE session_id = ?")
+        .run(sessionId).changes > 0;
+      if (!deleted) return false;
+      this.db
+        .prepare("UPDATE demo_sessions SET updated_at = ? WHERE id = ?")
+        .run(now, sessionId);
+      this.appendEvent(sessionId, "settings.updated", "wechat-qr", now);
+      return true;
+    })();
   }
 
   setSessionActiveIfBaselinesComplete(id: string, authGeneration: number, now: number): boolean {
@@ -861,6 +927,16 @@ function mapSession(row: RawSession): SessionRow {
     runGeneration: row.run_generation,
     accountKeyHash: row.account_key_hash,
     lastErrorCode: row.last_error_code,
+  };
+}
+
+function mapAccountQrAsset(row: RawAccountQrAsset): AccountQrAssetRow {
+  return {
+    sessionId: row.session_id,
+    envelope: row.envelope,
+    mimeType: row.mime_type,
+    byteLength: row.byte_length,
+    updatedAt: row.updated_at,
   };
 }
 

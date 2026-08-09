@@ -1,6 +1,6 @@
 # Partner API 接入文档
 
-Partner API 供其他业务服务接入视频号登录、托管、回复配置、评论和私信展示。当前 DEV 地址：
+Partner API 供其他业务服务接入视频号登录、托管、回复配置、业务微信二维码、评论和私信展示。当前 DEV 地址：
 
 ```text
 https://dev.yytt.com.cn/partner/v1
@@ -20,6 +20,7 @@ https://dev.yytt.com.cn/partner/v1
 - 一个 Partner API Key 可以访问这个 Demo 服务保留的全部账号；`accountId` 只是账号容器标识，不是租户权限边界。
 - 所有响应都使用 `Cache-Control: no-store`，不会设置浏览器会话 Cookie。
 - 接口不会返回视频号 Cookie、Finder 标识、平台目标、具体模型名、上游地址或上游请求 ID。
+- 业务微信二维码图片只在 `PUT /accounts/{accountId}/wechat-qr` 请求中进入服务；Partner 响应和账号投影只返回配置元数据，永不返回该图片的 data URL 或 Base64 内容。
 
 ## 2. 通用约定
 
@@ -59,14 +60,15 @@ export PARTNER_API_KEY='<通过安全渠道获取的 Partner API Key>'
 4. 每 2 秒调用 `GET /accounts/{accountId}/login/status`，分别判断是否扫码和是否登录完成。
 5. 登录完成后读取 `GET /accounts/{accountId}/hosting`。只有 `loginExpired: true` 才表示平台明确要求重新登录。
 6. 调用 `PUT /accounts/{accountId}/reply-settings` 选择回复方式；选择 `funnel` 时同时提交已知 `jobNumber`。
-7. 调用 `PUT /accounts/{accountId}/hosting` 开启或暂停自动回复。
-8. 分别分页读取 `/comments` 和 `/direct-messages`，按内容 `id` 更新已有记录。
+7. 使用招聘接口且需要发送业务微信二维码时，调用 `PUT /accounts/{accountId}/wechat-qr` 配置当前账号的图片。
+8. 调用 `PUT /accounts/{accountId}/hosting` 开启或暂停自动回复。
+9. 分别分页读取 `/comments` 和 `/direct-messages`，按内容 `id` 更新已有记录。
 
 ## 4. 公共数据结构
 
 ### 4.1 AccountProjection
 
-账号创建、账号详情以及所有修改接口都返回完整账号投影：
+账号创建、账号详情、托管和回复方式修改接口返回完整账号投影；业务微信二维码专用接口返回更窄的元数据响应：
 
 ```json
 {
@@ -95,6 +97,12 @@ export PARTNER_API_KEY='<通过安全渠道获取的 Partner API Key>'
     "providerConfigured": true,
     "jobNumber": null
   },
+  "wechatQr": {
+    "configured": true,
+    "mimeType": "image/png",
+    "byteLength": 18432,
+    "updatedAt": "2026-08-09T04:18:00.000Z"
+  },
   "sources": {
     "comments": {
       "state": "healthy",
@@ -113,6 +121,8 @@ export PARTNER_API_KEY='<通过安全渠道获取的 Partner API Key>'
 ```
 
 `accountDisplayName` 在登录完成前可以为 `null`。`automationEnabled` 是实际保存的自动回复开关（服务或所选回复方式不可用时不会保存为开启），`automationEffective` 表示服务总开关、登录和所选回复方式当前都可用；界面展示实际托管能力时应以后者为准。
+
+`wechatQr.configured` 表示该账号是否已配置业务微信二维码。未配置时 `mimeType`、`byteLength`、`updatedAt` 都是 `null`；已配置时只返回 MIME、解码后字节数和更新时间。此投影不会返回二维码图片内容，也不要把登录二维码的 `login.qrDataUrl` 当作业务微信二维码。
 
 `sources.comments` 和 `sources.directMessages` 的 `state` 可为：
 
@@ -378,7 +388,71 @@ curl --fail-with-body -X PUT \
 
 成功返回完整 `AccountProjection`。选择 `funnel` 时 `jobNumber` 去除首尾空白后必须非空；缺失时返回 `funnel_job_number_required`，原设置不变。岗位是否真实存在由后续 Funnel 调用结果决定。
 
-## 9. 评论和私信
+## 9. 业务微信二维码
+
+每个账号最多保存一张业务微信二维码。只接受非空 PNG 或 JPEG data URL，Base64 解码后的图片不得超过 512 KiB；声明的 MIME 必须与图片魔数一致。Partner API 不接受远程 URL，也不会在任何响应中回传图片内容。
+
+### GET /accounts/{accountId}/wechat-qr
+
+读取当前账号的配置元数据：
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer ${PARTNER_API_KEY}" \
+  "${PARTNER_API_BASE}/accounts/<accountId>/wechat-qr"
+```
+
+```json
+{
+  "accountId": "<opaque-account-id>",
+  "wechatQr": {
+    "configured": true,
+    "mimeType": "image/png",
+    "byteLength": 18432,
+    "updatedAt": "2026-08-09T04:18:00.000Z"
+  }
+}
+```
+
+### PUT /accounts/{accountId}/wechat-qr
+
+配置或原子替换当前账号的二维码。`dataUrl` 只能由调用方后端发送，不要把 Partner API Key 或该请求放到浏览器：
+
+```bash
+curl --fail-with-body -X PUT \
+  -H "Authorization: Bearer ${PARTNER_API_KEY}" \
+  -H 'Content-Type: application/json' \
+  --data '{"dataUrl":"data:image/png;base64,<base64-data>"}' \
+  "${PARTNER_API_BASE}/accounts/<accountId>/wechat-qr"
+```
+
+成功返回与 GET 相同的 `{accountId,wechatQr}` 元数据，不回显 `dataUrl`。输入无效或超过 512 KiB 时原二维码保持不变。
+
+### DELETE /accounts/{accountId}/wechat-qr
+
+只删除当前账号的业务微信二维码，不删除账号、登录态、评论或私信：
+
+```bash
+curl --fail-with-body -X DELETE \
+  -H "Authorization: Bearer ${PARTNER_API_KEY}" \
+  "${PARTNER_API_BASE}/accounts/<accountId>/wechat-qr"
+```
+
+成功返回 HTTP 200：
+
+```json
+{
+  "accountId": "<opaque-account-id>",
+  "wechatQr": {
+    "configured": false,
+    "mimeType": null,
+    "byteLength": null,
+    "updatedAt": null
+  }
+}
+```
+
+## 10. 评论和私信
 
 ### GET /accounts/{accountId}/comments
 
@@ -424,7 +498,7 @@ curl --fail-with-body \
 }
 ```
 
-`source` 在评论接口中固定为 `comment`，在私信接口中固定为 `dm`。私信回复可能分为多个消息气泡，调用方必须使用 `reply.messages` 保留顺序；`reply.text` 是便于列表展示的单段文本。尚未产生回复时 `reply` 为 `null`。
+`source` 在评论接口中固定为 `comment`，在私信接口中固定为 `dm`。私信回复可能分为多个消息气泡，调用方必须使用 `reply.messages` 保留顺序；`reply.text` 是便于列表展示的单段文本。仅发送业务微信二维码而没有文字气泡时，`reply.text` 为 `""`、`reply.messages` 为 `[]`。尚未产生回复时 `reply` 为 `null`。
 
 `reply.state` 可为：
 
@@ -457,7 +531,7 @@ curl --fail-with-body \
 
 回复状态是异步变化的。同一个内容 `id` 可能先是 `generating`，之后变为 `confirmed` 或 `failed`；调用方轮询第一页时应按 `id` upsert，不要只追加。
 
-## 10. 错误码
+## 11. 错误码
 
 所有失败响应都是：
 
@@ -472,6 +546,8 @@ curl --fail-with-body \
 | 400 | `invalid_request` | JSON、路径参数或查询参数不符合接口约束 |
 | 400 | `invalid_cursor` | cursor 损坏，或用于了不同账号/来源 |
 | 400 | `funnel_job_number_required` | 选择 `funnel` 时没有提供非空岗位号 |
+| 400 | `account_wechat_qr_invalid` | 二维码不是有效且 MIME 匹配的 PNG/JPEG data URL；原配置不变 |
+| 400 | `account_wechat_qr_too_large` | 二维码解码后超过 512 KiB；原配置不变 |
 | 401 | `partner_api_unauthorized` | Bearer Key 缺失或不匹配 |
 | 404 | `partner_account_not_found` | 账号不存在、已删除、已退出或不再保留 |
 | 409 | `login_in_progress` | 当前登录正在扫码后初始化，不能刷新二维码 |
@@ -484,7 +560,7 @@ curl --fail-with-body \
 
 认证失败响应带 `WWW-Authenticate: Bearer`。客户端可以根据 HTTP 状态处理大类、根据稳定 `error` 字段展示业务原因；不要依赖服务端错误文案。
 
-## 11. 已知限制
+## 12. 已知限制
 
 - 当前只有一个共享 Partner API Key，没有调用方隔离、细粒度权限、限流或 webhook。
 - 不提供岗位列表；调用方自行保存并提交已知 `jobNumber`。

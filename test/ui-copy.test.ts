@@ -40,6 +40,9 @@ describe("public reply-provider copy", () => {
     expect(appSource).toContain("data.service.selectedProviderConfigured");
     expect(appSource).toContain('skipped: "无需回复"');
     expect(appSource).toContain('item.replyState === "skipped"');
+    expect(appSource).toContain('item.replyAction === "send_wechat_qr"');
+    expect(appSource).toContain('confirmed: "业务微信二维码已发送"');
+    expect(appSource).toContain(': "暂无文字回复"');
   });
 
   it("keeps provider controls bound to one account during session transitions", () => {
@@ -60,6 +63,35 @@ describe("public reply-provider copy", () => {
     expect(appSource).toContain("formSessionId !== sharedSessions.selectedSessionId");
     expect(appSource).toContain("if (generation === sessionGeneration)");
     expect(appSource).toContain("else void refresh()");
+  });
+
+  it("manages one bounded business WeChat QR for the selected account", () => {
+    const indexSource = readFileSync(
+      join(process.cwd(), "public", "index.html"),
+      "utf8",
+    );
+    const appSource = readFileSync(
+      join(process.cwd(), "public", "app.js"),
+      "utf8",
+    );
+
+    expect(indexSource).toContain("业务微信二维码");
+    expect(indexSource).toContain('id="wechatQrPreview"');
+    expect(indexSource).toContain('id="wechatQrFileInput"');
+    expect(indexSource).toContain('accept="image/png,image/jpeg"');
+    expect(indexSource).toContain('id="wechatQrDeleteButton"');
+    expect(appSource).toContain("const WECHAT_QR_MAX_BYTES = 512 * 1024");
+    expect(appSource).toContain("PNG_SIGNATURE");
+    expect(appSource).toContain("JPEG_SIGNATURE");
+    expect(appSource).toContain("account_wechat_qr_not_configured");
+    expect(appSource).toContain('"/api/session/wechat-qr"');
+    expect(appSource).toContain('"X-Demo-Account-Id": accountKey');
+    expect(appSource).toContain("assertWechatQrResponseAccount(payload, accountKey)");
+    expect(appSource).toContain('method: "PUT"');
+    expect(appSource).toContain('method: "DELETE"');
+    expect(appSource).toContain("resetWechatQrState()");
+    expect(appSource).toContain("generation === sessionGeneration");
+    expect(appSource).toContain("accountKey === currentWechatQrAccountKey()");
   });
 
   it("keeps SSE on compatible origins and uses five-second polling for Quick Tunnel", () => {

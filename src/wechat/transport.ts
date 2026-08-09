@@ -11,6 +11,7 @@ export type WechatEndpoint =
   | "dmHistory"
   | "dmNewMessages"
   | "dmSessionInfo"
+  | "dmUploadMedia"
   | "dmSendText"
   | "postList"
   | "commentList"
@@ -85,6 +86,14 @@ export const REQUEST_DESCRIPTORS: Readonly<Record<WechatEndpoint, RequestDescrip
     profile: "legacy",
     evidence: "official_bundle",
     irreversible: false,
+  },
+  dmUploadMedia: {
+    path: "/cgi-bin/mmfinderassistant-bin/private-msg/upload-media-info",
+    encoding: "json",
+    profile: "legacy",
+    evidence: "official_bundle",
+    irreversible: false,
+    requiresBaseResp: true,
   },
   dmSendText: {
     path: "/cgi-bin/mmfinderassistant-bin/private-msg/send-private-msg",

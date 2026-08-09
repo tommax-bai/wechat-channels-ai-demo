@@ -17,6 +17,14 @@ const elements = {
   funnelJobNumberInput: document.querySelector("#funnelJobNumberInput"),
   providerHint: document.querySelector("#providerHint"),
   saveReplyProviderButton: document.querySelector("#saveReplyProviderButton"),
+  wechatQrStatus: document.querySelector("#wechatQrStatus"),
+  wechatQrPreview: document.querySelector("#wechatQrPreview"),
+  wechatQrEmpty: document.querySelector("#wechatQrEmpty"),
+  wechatQrMeta: document.querySelector("#wechatQrMeta"),
+  wechatQrFileInput: document.querySelector("#wechatQrFileInput"),
+  wechatQrChooseButton: document.querySelector("#wechatQrChooseButton"),
+  wechatQrDeleteButton: document.querySelector("#wechatQrDeleteButton"),
+  wechatQrHint: document.querySelector("#wechatQrHint"),
   dmHealth: document.querySelector("#dmHealth"),
   dmDot: document.querySelector("#dmDot"),
   commentHealth: document.querySelector("#commentHealth"),
@@ -62,6 +70,12 @@ const errorLabels = {
   platform_send_in_flight: "发送结果正在确认，请稍后再试",
   funnel_provider_unavailable: "招聘接口未配置",
   funnel_job_number_required: "请填写招聘岗位号",
+  account_wechat_qr_invalid: "二维码文件无效，请选择 PNG 或 JPEG 图片",
+  account_wechat_qr_not_configured: "当前账号尚未配置业务微信二维码",
+  account_wechat_qr_too_large: "二维码文件不能超过 512 KiB",
+  wechat_qr_file_empty: "二维码文件不能为空",
+  wechat_qr_file_type_invalid: "仅支持 PNG 或 JPEG 图片",
+  wechat_qr_file_too_large: "二维码文件不能超过 512 KiB",
 };
 
 const authErrorLabels = {
@@ -91,6 +105,17 @@ let providerFormDirty = false;
 let providerSaving = false;
 let sessionTransitioning = false;
 let sessionGeneration = 0;
+let wechatQrAccountKey = null;
+let wechatQrRevision = null;
+let wechatQrMetadata = emptyWechatQrMetadata();
+let wechatQrPreviewDataUrl = null;
+let wechatQrLoading = false;
+let wechatQrBusy = false;
+let wechatQrRequestSequence = 0;
+
+const WECHAT_QR_MAX_BYTES = 512 * 1024;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
 
 async function api(path, options = {}) {
   const headers = { ...options.headers };
@@ -119,6 +144,7 @@ async function refresh() {
       sharedSessions = nextSharedSessions;
       renderSharedSessions(sharedSessions);
       snapshot = null;
+      resetWechatQrState();
       eventSource?.close();
       eventSource = null;
       elements.currentSessionTab.disabled = true;
@@ -148,6 +174,7 @@ async function selectSession(sessionId) {
   if (sessionTransitioning) return;
   const generation = ++sessionGeneration;
   let synchronized = false;
+  resetWechatQrState();
   eventSource?.close();
   eventSource = null;
   sessionTransitioning = true;
@@ -179,8 +206,10 @@ async function selectSession(sessionId) {
       sessionTransitioning = false;
       setSessionButtonsDisabled(false);
       elements.addSessionButton.disabled = false;
-      if (synchronized && snapshot) updateProviderControls(snapshot, true);
-      else void refresh();
+      if (synchronized && snapshot) {
+        updateProviderControls(snapshot, true);
+        updateWechatQrControls();
+      } else void refresh();
     }
   }
 }
@@ -189,6 +218,7 @@ async function addSession() {
   if (sessionTransitioning) return;
   const generation = ++sessionGeneration;
   let synchronized = false;
+  resetWechatQrState();
   eventSource?.close();
   eventSource = null;
   sessionTransitioning = true;
@@ -218,8 +248,10 @@ async function addSession() {
       sessionTransitioning = false;
       setSessionButtonsDisabled(false);
       setBusy(elements.addSessionButton, false, "添加视频号");
-      if (synchronized && snapshot) updateProviderControls(snapshot, true);
-      else void refresh();
+      if (synchronized && snapshot) {
+        updateProviderControls(snapshot, true);
+        updateWechatQrControls();
+      } else void refresh();
     }
   }
 }
@@ -298,6 +330,7 @@ async function logout() {
     eventSource = null;
     autoStarted = false;
     snapshot = null;
+    resetWechatQrState();
     await refresh();
   } catch (error) {
     elements.authHint.textContent = `退出失败：${safeLabel(error.message)}`;
@@ -352,6 +385,7 @@ function render(data) {
   elements.connectionDot.className = `status-dot ${dotClass(data.authState)}`;
   elements.accountName.textContent = data.accountDisplayName || "尚未连接";
   renderProviderSettings(data);
+  renderWechatQrSettings(data);
   elements.automationBadge.textContent = data.automationEnabled ? "运行中" : "已停止";
   elements.automationBadge.className = `badge ${data.automationEnabled ? "" : "muted"}`;
   elements.automationButton.textContent = data.automationEnabled ? "停止自动回复" : "恢复自动回复";
@@ -427,6 +461,305 @@ function selectedProviderDraft() {
 
 function providerLabel(provider) {
   return provider === "funnel" ? "招聘接口" : "CHAT回复";
+}
+
+function emptyWechatQrMetadata() {
+  return {
+    configured: false,
+    mimeType: null,
+    byteLength: null,
+    updatedAt: null,
+  };
+}
+
+function normalizeWechatQrMetadata(value) {
+  if (!value || typeof value !== "object") return emptyWechatQrMetadata();
+  const configured = value.configured === true;
+  return {
+    configured,
+    mimeType: configured && ["image/png", "image/jpeg"].includes(value.mimeType)
+      ? value.mimeType
+      : null,
+    byteLength: configured && Number.isSafeInteger(value.byteLength) && value.byteLength > 0
+      ? value.byteLength
+      : null,
+    updatedAt: configured && (typeof value.updatedAt === "number" || typeof value.updatedAt === "string")
+      ? value.updatedAt
+      : null,
+  };
+}
+
+function wechatQrMetadataFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return emptyWechatQrMetadata();
+  return normalizeWechatQrMetadata(payload.wechatQr || payload);
+}
+
+function wechatQrDataUrlFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const value = payload.dataUrl ?? payload.wechatQr?.dataUrl;
+  return typeof value === "string" && /^data:image\/(?:png|jpeg);base64,/.test(value)
+    ? value
+    : null;
+}
+
+function currentWechatQrAccountKey() {
+  return snapshot?.sessionId || null;
+}
+
+function wechatQrMetadataRevision(metadata) {
+  return metadata.configured
+    ? `${metadata.mimeType}:${metadata.byteLength}:${metadata.updatedAt}`
+    : "not-configured";
+}
+
+function resetWechatQrState() {
+  wechatQrRequestSequence += 1;
+  wechatQrAccountKey = null;
+  wechatQrRevision = null;
+  wechatQrMetadata = emptyWechatQrMetadata();
+  wechatQrPreviewDataUrl = null;
+  wechatQrLoading = false;
+  wechatQrBusy = false;
+  elements.wechatQrFileInput.value = "";
+  elements.wechatQrPreview.hidden = true;
+  elements.wechatQrPreview.removeAttribute("src");
+  elements.wechatQrEmpty.hidden = false;
+  elements.wechatQrStatus.textContent = "读取配置中";
+  elements.wechatQrMeta.textContent = "仅支持 PNG、JPEG，文件不超过 512 KiB";
+  elements.wechatQrHint.textContent = "等待读取当前账号配置";
+  updateWechatQrControls(true);
+}
+
+function renderWechatQrSettings(data) {
+  const accountKey = currentWechatQrAccountKey();
+  const metadata = normalizeWechatQrMetadata(data.wechatQr);
+  const revision = wechatQrMetadataRevision(metadata);
+  if (wechatQrAccountKey !== accountKey || wechatQrRevision !== revision) {
+    resetWechatQrState();
+    wechatQrAccountKey = accountKey;
+    wechatQrRevision = revision;
+    wechatQrMetadata = metadata;
+  } else {
+    wechatQrMetadata = metadata;
+  }
+  renderWechatQrView();
+  if (
+    accountKey
+    && metadata.configured
+    && !wechatQrPreviewDataUrl
+    && !wechatQrLoading
+    && !wechatQrBusy
+    && !sessionTransitioning
+  ) {
+    void loadWechatQrPreview(accountKey, sessionGeneration, revision);
+  }
+}
+
+function renderWechatQrView(preserveHint = false) {
+  const hasPreview = Boolean(wechatQrMetadata.configured && wechatQrPreviewDataUrl);
+  if (hasPreview) {
+    if (elements.wechatQrPreview.src !== wechatQrPreviewDataUrl) {
+      elements.wechatQrPreview.src = wechatQrPreviewDataUrl;
+    }
+    elements.wechatQrPreview.hidden = false;
+    elements.wechatQrEmpty.hidden = true;
+  } else {
+    elements.wechatQrPreview.hidden = true;
+    elements.wechatQrPreview.removeAttribute("src");
+    elements.wechatQrEmpty.hidden = false;
+  }
+
+  elements.wechatQrStatus.textContent = wechatQrBusy
+    ? "正在保存"
+    : wechatQrLoading
+      ? "读取预览中"
+      : wechatQrMetadata.configured
+        ? "已配置"
+        : "未配置";
+  elements.wechatQrMeta.textContent = wechatQrMetadata.configured
+    ? `${wechatQrMimeLabel(wechatQrMetadata.mimeType)} · ${formatBytes(wechatQrMetadata.byteLength)} · ${formatTime(wechatQrMetadata.updatedAt)}`
+    : "仅支持 PNG、JPEG，文件不超过 512 KiB";
+  updateWechatQrControls(preserveHint);
+}
+
+function updateWechatQrControls(preserveHint = false) {
+  const controlsDisabled = wechatQrBusy
+    || wechatQrLoading
+    || sessionTransitioning
+    || !currentWechatQrAccountKey();
+  elements.wechatQrFileInput.disabled = controlsDisabled;
+  elements.wechatQrChooseButton.disabled = controlsDisabled;
+  elements.wechatQrChooseButton.textContent = wechatQrBusy
+    ? "正在上传"
+    : wechatQrMetadata.configured
+      ? "替换二维码"
+      : "上传二维码";
+  elements.wechatQrDeleteButton.disabled = controlsDisabled || !wechatQrMetadata.configured;
+  if (preserveHint) return;
+  elements.wechatQrHint.textContent = wechatQrBusy
+    ? "正在保存当前账号二维码"
+    : wechatQrLoading
+      ? "正在读取当前账号二维码预览"
+      : wechatQrMetadata.configured
+        ? "当前账号二维码已配置，可替换或删除"
+        : "当前账号尚未配置业务微信二维码";
+}
+
+async function loadWechatQrPreview(accountKey, generation, revision) {
+  if (!accountKey) return;
+  const requestId = ++wechatQrRequestSequence;
+  wechatQrLoading = true;
+  renderWechatQrView();
+  try {
+    const payload = await api("/api/session/wechat-qr", {
+      headers: { "X-Demo-Account-Id": accountKey },
+    });
+    if (!isCurrentWechatQrRequest(requestId, generation, accountKey)) return;
+    assertWechatQrResponseAccount(payload, accountKey);
+    const metadata = wechatQrMetadataFromPayload(payload);
+    const dataUrl = wechatQrDataUrlFromPayload(payload);
+    if (!metadata.configured || !dataUrl) throw new Error("account_wechat_qr_invalid");
+    if (wechatQrMetadataRevision(metadata) !== revision) {
+      wechatQrRevision = wechatQrMetadataRevision(metadata);
+    }
+    wechatQrMetadata = metadata;
+    wechatQrPreviewDataUrl = dataUrl;
+    if (snapshot) snapshot = { ...snapshot, wechatQr: metadata };
+  } catch (error) {
+    if (isCurrentWechatQrRequest(requestId, generation, accountKey)) {
+      elements.wechatQrHint.textContent = `二维码预览读取失败：${safeLabel(error.message)}`;
+    }
+  } finally {
+    if (isCurrentWechatQrRequest(requestId, generation, accountKey)) {
+      wechatQrLoading = false;
+      renderWechatQrView(true);
+    }
+  }
+}
+
+async function uploadWechatQr(file) {
+  if (!snapshot || wechatQrBusy || wechatQrLoading || sessionTransitioning) return;
+  const generation = sessionGeneration;
+  const accountKey = currentWechatQrAccountKey();
+  if (!accountKey) return;
+  const requestId = ++wechatQrRequestSequence;
+  wechatQrBusy = true;
+  renderWechatQrView();
+  try {
+    const dataUrl = await validatedWechatQrDataUrl(file);
+    if (!isCurrentWechatQrRequest(requestId, generation, accountKey)) return;
+    const payload = await api("/api/session/wechat-qr", {
+      method: "PUT",
+      headers: { "X-Demo-Account-Id": accountKey },
+      body: JSON.stringify({ dataUrl }),
+    });
+    if (!isCurrentWechatQrRequest(requestId, generation, accountKey)) return;
+    assertWechatQrResponseAccount(payload, accountKey);
+    applyWechatQrPayload(payload, dataUrl);
+    elements.wechatQrHint.textContent = "当前账号二维码已保存";
+  } catch (error) {
+    if (isCurrentWechatQrRequest(requestId, generation, accountKey)) {
+      elements.wechatQrHint.textContent = `二维码保存失败：${safeLabel(error.message)}`;
+    }
+  } finally {
+    if (isCurrentWechatQrRequest(requestId, generation, accountKey)) {
+      wechatQrBusy = false;
+      elements.wechatQrFileInput.value = "";
+      renderWechatQrView(true);
+    }
+  }
+}
+
+async function deleteWechatQr() {
+  if (
+    !snapshot
+    || !wechatQrMetadata.configured
+    || wechatQrBusy
+    || wechatQrLoading
+    || sessionTransitioning
+  ) return;
+  const generation = sessionGeneration;
+  const accountKey = currentWechatQrAccountKey();
+  if (!accountKey) return;
+  const requestId = ++wechatQrRequestSequence;
+  wechatQrBusy = true;
+  renderWechatQrView();
+  try {
+    const payload = await api("/api/session/wechat-qr", {
+      method: "DELETE",
+      headers: { "X-Demo-Account-Id": accountKey },
+    });
+    if (!isCurrentWechatQrRequest(requestId, generation, accountKey)) return;
+    assertWechatQrResponseAccount(payload, accountKey);
+    applyWechatQrPayload(payload, null);
+    elements.wechatQrHint.textContent = "当前账号二维码已删除";
+  } catch (error) {
+    if (isCurrentWechatQrRequest(requestId, generation, accountKey)) {
+      elements.wechatQrHint.textContent = `二维码删除失败：${safeLabel(error.message)}`;
+    }
+  } finally {
+    if (isCurrentWechatQrRequest(requestId, generation, accountKey)) {
+      wechatQrBusy = false;
+      renderWechatQrView(true);
+    }
+  }
+}
+
+function applyWechatQrPayload(payload, dataUrl) {
+  const metadata = wechatQrMetadataFromPayload(payload);
+  wechatQrMetadata = metadata;
+  wechatQrRevision = wechatQrMetadataRevision(metadata);
+  wechatQrPreviewDataUrl = metadata.configured ? dataUrl : null;
+  if (snapshot) snapshot = { ...snapshot, wechatQr: metadata };
+}
+
+function assertWechatQrResponseAccount(payload, accountKey) {
+  if (payload?.accountId !== accountKey) {
+    throw new Error("demo_account_response_mismatch");
+  }
+}
+
+function isCurrentWechatQrRequest(requestId, generation, accountKey) {
+  return requestId === wechatQrRequestSequence
+    && generation === sessionGeneration
+    && accountKey === currentWechatQrAccountKey();
+}
+
+async function validatedWechatQrDataUrl(file) {
+  if (!(file instanceof File) || file.size === 0) throw new Error("wechat_qr_file_empty");
+  if (file.size > WECHAT_QR_MAX_BYTES) throw new Error("wechat_qr_file_too_large");
+  if (!["image/png", "image/jpeg"].includes(file.type)) {
+    throw new Error("wechat_qr_file_type_invalid");
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const detectedMime = startsWithBytes(bytes, PNG_SIGNATURE)
+    ? "image/png"
+    : startsWithBytes(bytes, JPEG_SIGNATURE)
+      ? "image/jpeg"
+      : null;
+  if (detectedMime !== file.type) throw new Error("wechat_qr_file_type_invalid");
+  return `data:${detectedMime};base64,${bytesToBase64(bytes)}`;
+}
+
+function startsWithBytes(bytes, signature) {
+  return bytes.length >= signature.length
+    && signature.every((value, index) => bytes[index] === value);
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return window.btoa(binary);
+}
+
+function wechatQrMimeLabel(mimeType) {
+  return mimeType === "image/jpeg" ? "JPEG" : "PNG";
+}
+
+function formatBytes(value) {
+  return Number.isFinite(value) ? `${Math.ceil(value / 1024)} KiB` : "大小未知";
 }
 
 function renderSharedSessions(data) {
@@ -584,14 +917,30 @@ function renderReply(item) {
   const title = document.createElement("small");
   title.textContent = "自动回复";
   const text = document.createElement("p");
-  text.textContent = item.replyState === "skipped"
-    ? "无需回复"
-    : item.replyText || "正在生成…";
+  text.textContent = replyDisplayText(item);
   const state = document.createElement("span");
   state.className = `reply-state ${item.replyState}`;
   state.textContent = replyStateLabel(item.replyState, item.replyErrorCode);
   box.append(title, text, state);
   return box;
+}
+
+function replyDisplayText(item) {
+  if (item.replyState === "skipped") return "无需回复";
+  if (item.replyText) return item.replyText;
+  if (item.replyAction === "send_wechat_qr") {
+    const actionLabels = {
+      generated: "业务微信二维码准备发送",
+      sending: "正在发送业务微信二维码…",
+      confirmed: "业务微信二维码已发送",
+      failed: "业务微信二维码发送失败",
+      submitted_unknown: "业务微信二维码已提交，结果未知",
+    };
+    return actionLabels[item.replyState] || "正在处理业务微信二维码…";
+  }
+  return ["queued", "generating"].includes(item.replyState)
+    ? "正在生成…"
+    : "暂无文字回复";
 }
 
 function replyStateLabel(state, error) {
@@ -664,6 +1013,16 @@ elements.funnelJobNumberInput.addEventListener("input", () => {
   if (snapshot) updateProviderControls(snapshot);
 });
 elements.saveReplyProviderButton.addEventListener("click", () => void saveReplyProvider());
+elements.wechatQrChooseButton.addEventListener("click", () => {
+  if (wechatQrBusy || wechatQrLoading || sessionTransitioning) return;
+  elements.wechatQrFileInput.value = "";
+  elements.wechatQrFileInput.click();
+});
+elements.wechatQrFileInput.addEventListener("change", () => {
+  const file = elements.wechatQrFileInput.files?.[0];
+  if (file) void uploadWechatQr(file);
+});
+elements.wechatQrDeleteButton.addEventListener("click", () => void deleteWechatQr());
 elements.logoutButton.addEventListener("click", () => void logout());
 elements.currentSessionTab.addEventListener("click", () => showView("current"));
 elements.sessionSwitcherTab.addEventListener("click", () => showView("sessions"));

@@ -31,6 +31,9 @@ const replyProviderBody = z.object({
   provider: z.enum(["chat-llm", "funnel"]),
   jobNumber: z.string().max(128).optional(),
 }).strict();
+const accountWechatQrBody = z.object({
+  dataUrl: z.string().min(1),
+}).strict();
 const selectSessionBody = z.object({
   sessionId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
 }).strict();
@@ -180,6 +183,33 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     return deps.sessions.snapshot(updated);
   });
 
+  app.get("/api/session/wechat-qr", async (request) => {
+    const session = requireTargetedDemoAccount(request, deps);
+    return {
+      accountId: session.id,
+      wechatQr: deps.sessions.getAccountWechatQr(session),
+    };
+  });
+
+  app.put("/api/session/wechat-qr", async (request) => {
+    assertSameOrigin(request, deps.config);
+    const session = requireTargetedDemoAccount(request, deps);
+    const body = accountWechatQrBody.parse(request.body);
+    return {
+      accountId: session.id,
+      wechatQr: deps.sessions.setAccountWechatQr(session, body.dataUrl),
+    };
+  });
+
+  app.delete("/api/session/wechat-qr", async (request) => {
+    assertSameOrigin(request, deps.config);
+    const session = requireTargetedDemoAccount(request, deps);
+    return {
+      accountId: session.id,
+      wechatQr: deps.sessions.deleteAccountWechatQr(session),
+    };
+  });
+
   app.delete("/api/session", async (request, reply) => {
     assertSameOrigin(request, deps.config);
     const session = requireSession(request, reply, deps);
@@ -243,7 +273,7 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   registerPartnerApi(app, deps);
 
   app.setErrorHandler((error, request, reply) => {
-    const code = safeServerError(error);
+    const code = safeServerError(error, request);
     const statusCode = statusFor(code);
     if (code === "internal_error") {
       request.log.error({ err: error, code, statusCode }, "request failed");
@@ -286,6 +316,20 @@ function requireSession(
     reply.code(401);
     throw new Error("demo_session_required");
   }
+  return session;
+}
+
+function requireTargetedDemoAccount(
+  request: FastifyRequest,
+  deps: ServerDependencies,
+): SessionRow {
+  const rawAccountId = request.headers["x-demo-account-id"];
+  const accountId = Array.isArray(rawAccountId) ? rawAccountId[0] : rawAccountId;
+  if (!accountId || !/^[A-Za-z0-9_-]{43}$/.test(accountId)) {
+    throw new Error("demo_account_target_required");
+  }
+  const session = deps.sessions.resolveShared(accountId);
+  if (!session) throw new Error("shared_session_unavailable");
   return session;
 }
 
@@ -338,7 +382,10 @@ function safeEventType(value: string): string {
   return /^[a-z][a-z0-9_.-]{0,63}$/.test(value) ? value : "update";
 }
 
-function safeServerError(error: unknown): string {
+function safeServerError(error: unknown, request: FastifyRequest): string {
+  if (isBodyTooLargeError(error) && isAccountWechatQrPut(request)) {
+    return "account_wechat_qr_too_large";
+  }
   if (error instanceof z.ZodError) return "invalid_request";
   if (
     error instanceof Error
@@ -348,6 +395,19 @@ function safeServerError(error: unknown): string {
   if (error instanceof SessionLimitError) return error.message;
   if (error instanceof Error && /^[a-z0-9_:-]{1,120}$/.test(error.message)) return error.message;
   return "internal_error";
+}
+
+function isBodyTooLargeError(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && error.code === "FST_ERR_CTP_BODY_TOO_LARGE";
+}
+
+function isAccountWechatQrPut(request: FastifyRequest): boolean {
+  if (request.method !== "PUT") return false;
+  const path = request.url.split("?", 1)[0];
+  return path === "/api/session/wechat-qr"
+    || /^\/partner\/v1\/accounts\/[A-Za-z0-9_-]{43}\/wechat-qr$/.test(path ?? "");
 }
 
 function statusFor(code: string): number {
@@ -366,6 +426,9 @@ function statusFor(code: string): number {
   ) return 404;
   if (
     code === "invalid_request"
+    || code === "demo_account_target_required"
+    || code === "account_wechat_qr_invalid"
+    || code === "account_wechat_qr_too_large"
     || code === "invalid_cursor"
     || code === "funnel_job_number_required"
   ) return 400;

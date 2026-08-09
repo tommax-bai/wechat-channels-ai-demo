@@ -59,7 +59,10 @@ This stage requires a separately approved disposable direct-message conversation
 - [ ] Repeat once for a disposable second-level comment and verify the reply is attached to that exact comment.
 - [ ] With `招聘接口` selected, verify a comment calls only `/job/comment-reply/{job_number}` and an empty `reply` is displayed as `无需回复` with no platform write.
 - [ ] With `招聘接口` selected, verify a DM calls only `/agent/b2c/chat`, uses a stable message id, and sends `content_list` items as separate bubbles in order.
-- [ ] Verify a returned `send_wechat_qr` or `escalate_to_human` action fails before any text is sent until that action has a real implementation.
+- [ ] Configure a bounded disposable business QR for the exact account and verify account/session list responses expose metadata but never image bytes.
+- [ ] With an explicitly approved disposable DM, trigger `send_wechat_qr`; verify the text bubbles arrive in order, followed by that account's QR image, and require a non-empty image `svrMsgId` before marking the reply confirmed.
+- [ ] Remove the account QR, trigger `send_wechat_qr` again, and verify the job fails as `account_wechat_qr_not_configured` before any Funnel text or image is dispatched.
+- [ ] Verify an `escalate_to_human` or unknown Funnel action still fails before any text or media is sent.
 - [ ] Switch the account back to `CHAT回复` and verify subsequent inputs use CHAT without calling the recruitment provider.
 - [ ] Simulate a send timeout and confirm the job becomes `submitted_unknown` with no automatic retry.
 - [ ] Stop or log out while generation is in progress and confirm a not-yet-dispatched request never reaches the platform.

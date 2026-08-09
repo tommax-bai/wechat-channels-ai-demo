@@ -116,6 +116,34 @@
               <button id="saveReplyProviderButton" class="button provider-save" type="button" disabled>保存回复方式</button>
             </div>
           </div>
+          <section class="wechat-qr-card" aria-labelledby="wechatQrTitle">
+            <div class="wechat-qr-heading">
+              <div>
+                <span>当前账号</span>
+                <strong id="wechatQrTitle">业务微信二维码</strong>
+              </div>
+              <small id="wechatQrStatus">读取配置中</small>
+            </div>
+            <div class="wechat-qr-content">
+              <div class="wechat-qr-preview">
+                <img id="wechatQrPreview" alt="当前账号业务微信二维码预览" hidden>
+                <div id="wechatQrEmpty" class="wechat-qr-empty">
+                  <span>码</span>
+                  <small>尚未配置</small>
+                </div>
+              </div>
+              <div class="wechat-qr-settings">
+                <p>招聘接口在私信中要求发送二维码时，将使用当前视频号账号配置的图片。</p>
+                <small id="wechatQrMeta">仅支持 PNG、JPEG，文件不超过 512 KiB</small>
+                <input id="wechatQrFileInput" class="visually-hidden" type="file" accept="image/png,image/jpeg">
+                <div class="wechat-qr-actions">
+                  <button id="wechatQrChooseButton" class="button secondary compact" type="button">上传二维码</button>
+                  <button id="wechatQrDeleteButton" class="button ghost danger compact" type="button" disabled>删除二维码</button>
+                </div>
+                <p id="wechatQrHint" class="wechat-qr-hint" role="status">等待读取当前账号配置</p>
+              </div>
+            </div>
+          </section>
           <div class="source-list">
             <div class="source-row">
               <span class="source-icon">信</span>

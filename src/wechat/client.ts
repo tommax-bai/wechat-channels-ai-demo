@@ -1,6 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { SerializedCookieJar } from "tough-cookie";
 import type {
+  AccountQrAsset,
+  DirectMessageTarget,
   NormalizedInboundItem,
   PlatformSession,
   ReplyTarget,
@@ -43,6 +45,8 @@ export interface WechatSendResult {
   externalId: string | null;
 }
 
+const DM_IMAGE_CHUNK_BYTES = 512 * 1024;
+
 interface DmCursorV1 {
   v: 1;
   phase: "history" | "incremental";
@@ -75,6 +79,13 @@ export interface WechatGateway {
     session: PlatformSession,
     target: ReplyTarget,
     text: string,
+    clientId: string,
+    beforeDispatch?: () => boolean,
+  ): Promise<WechatSendResult>;
+  sendImageReply(
+    session: PlatformSession,
+    target: DirectMessageTarget,
+    asset: AccountQrAsset,
     clientId: string,
     beforeDispatch?: () => boolean,
   ): Promise<WechatSendResult>;
@@ -414,37 +425,120 @@ export class PrivateWechatGateway implements WechatGateway {
         ? { requestContext: session.requestContext }
         : {}),
     };
-    const result = target.kind === "dm"
-      ? await this.transport.request("dmSendText", {
-          msgPack: {
-            sessionId: target.sessionId,
-            fromUsername: target.fromUsername,
-            toUsername: target.toUsername,
-            msgType: 1,
-            textMsg: { content: text },
-            cliMsgId: clientId,
-          },
-        }, context, {}, beforeDispatch)
-      : await this.transport.request("commentCreate", {
-          exportId: target.postId,
-          rootCommentId: target.rootCommentId,
-          replyCommentId: target.parentCommentId,
-          content: text,
-          clientId,
-          comment: target.commentContext,
-        }, context, {}, beforeDispatch);
-    const externalId = target.kind === "dm"
-      ? optionalString(result.data, ["svrMsgId"])
-      : extractCommentAck(result.data);
-    if (!externalId) {
-      throw new WechatApiError("platform_ack_missing", target.kind === "dm" ? "dmSendText" : "commentCreate", true);
-    }
     try {
-      session.cookieJar = serializeJar(jar);
-    } catch {
-      // A confirmed platform receipt remains true even if refreshed cookies cannot be serialized.
+      const result = target.kind === "dm"
+        ? await this.transport.request("dmSendText", {
+            msgPack: {
+              sessionId: target.sessionId,
+              fromUsername: target.fromUsername,
+              toUsername: target.toUsername,
+              msgType: 1,
+              textMsg: { content: text },
+              cliMsgId: clientId,
+            },
+          }, context, {}, beforeDispatch)
+        : await this.transport.request("commentCreate", {
+            exportId: target.postId,
+            rootCommentId: target.rootCommentId,
+            replyCommentId: target.parentCommentId,
+            content: text,
+            clientId,
+            comment: target.commentContext,
+          }, context, {}, beforeDispatch);
+      const externalId = target.kind === "dm"
+        ? optionalString(result.data, ["svrMsgId"])
+        : extractCommentAck(result.data);
+      if (!externalId) {
+        throw new WechatApiError("platform_ack_missing", target.kind === "dm" ? "dmSendText" : "commentCreate", true);
+      }
+      return { accepted: true, externalId };
+    } finally {
+      try {
+        session.cookieJar = serializeJar(jar);
+      } catch {
+        // The observed platform outcome stays authoritative if refreshed cookies cannot be serialized.
+      }
     }
-    return { accepted: true, externalId };
+  }
+
+  async sendImageReply(
+    session: PlatformSession,
+    target: DirectMessageTarget,
+    asset: AccountQrAsset,
+    clientId = newClientId(),
+    beforeDispatch?: () => boolean,
+  ): Promise<WechatSendResult> {
+    if (
+      !(asset.bytes instanceof Uint8Array)
+      || (asset.mimeType !== "image/png" && asset.mimeType !== "image/jpeg")
+    ) {
+      throw new WechatApiError("image_asset_invalid", "dmUploadMedia", false);
+    }
+    const bytes = Buffer.from(asset.bytes);
+    if (bytes.byteLength === 0) {
+      throw new WechatApiError("image_asset_empty", "dmUploadMedia", false);
+    }
+
+    const jar = this.transport.createJar(session.cookieJar);
+    const context: RequestContext = {
+      jar,
+      uin: session.uin,
+      finderUsername: session.finderUsername,
+      userAgent: session.userAgent,
+    };
+    try {
+      const chunks = Math.ceil(bytes.byteLength / DM_IMAGE_CHUNK_BYTES);
+      const aesKey = randomBytes(32).toString("base64");
+      const md5 = createHash("md5").update(bytes).digest("hex");
+      let imgMsg: Record<string, unknown> | null = null;
+
+      for (let chunk = 0; chunk < chunks; chunk += 1) {
+        const start = chunk * DM_IMAGE_CHUNK_BYTES;
+        const content = bytes.subarray(
+          start,
+          Math.min(start + DM_IMAGE_CHUNK_BYTES, bytes.byteLength),
+        );
+        const upload = await this.transport.request("dmUploadMedia", {
+          content: `data:application/octet-stream;base64,${content.toString("base64")}`,
+          chunk,
+          chunks,
+          fromUsername: target.fromUsername,
+          toUsername: target.toUsername,
+          aesKey,
+          mediaSize: bytes.byteLength,
+          mediaType: 3,
+          md5,
+        }, context, {}, beforeDispatch);
+        if (chunk === chunks - 1) {
+          imgMsg = asRecord(upload.data.imgMsg, "dmUploadMedia", "data.imgMsg");
+        }
+      }
+
+      if (!imgMsg) {
+        throw new WechatApiError("schema_changed:data.imgMsg", "dmUploadMedia", false);
+      }
+      const result = await this.transport.request("dmSendText", {
+        msgPack: {
+          sessionId: target.sessionId,
+          fromUsername: target.fromUsername,
+          toUsername: target.toUsername,
+          msgType: 3,
+          imgMsg,
+          cliMsgId: clientId,
+        },
+      }, context, {}, beforeDispatch);
+      const externalId = optionalString(result.data, ["svrMsgId"]);
+      if (!externalId) {
+        throw new WechatApiError("platform_ack_missing", "dmSendText", true);
+      }
+      return { accepted: true, externalId };
+    } finally {
+      try {
+        session.cookieJar = serializeJar(jar);
+      } catch {
+        // The observed platform outcome stays authoritative if refreshed cookies cannot be serialized.
+      }
+    }
   }
 
   private async loadParticipants(

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { CookieJar } from "tough-cookie";
 import { PrivateWechatGateway } from "../src/wechat/client.js";
 import type { WechatSessionCapturer } from "../src/wechat/browser-capture.js";
@@ -659,6 +660,211 @@ describe("PrivateWechatGateway parsers", () => {
       "测试回复",
       "client-1",
     )).rejects.toMatchObject({
+      code: "platform_ack_missing",
+      ambiguous: true,
+    });
+  });
+
+  it.each([
+    {
+      label: "platform rejection",
+      body: { errCode: 0, data: { baseResp: { errcode: 12345 } } },
+      expected: { code: "platform_12345", endpoint: "dmSendText", ambiguous: false },
+    },
+    {
+      label: "missing receipt",
+      body: { errCode: 0, data: { baseResp: { errcode: 0 } } },
+      expected: { code: "platform_ack_missing", endpoint: "dmSendText", ambiguous: true },
+    },
+  ])("persists refreshed cookies after a DM text send $label", async ({ body, expected }) => {
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async () => new Response(JSON.stringify(body), {
+        status: 201,
+        headers: {
+          "Content-Type": "application/json",
+          "Set-Cookie": "send_refresh=latest; Path=/; Secure; HttpOnly",
+        },
+      }),
+    }));
+    const session = fakePlatformSession();
+
+    await expect(gateway.sendReply(
+      session,
+      {
+        kind: "dm",
+        sessionId: "conversation-1",
+        fromUsername: "finder-self",
+        toUsername: "peer-1",
+      },
+      "测试回复",
+      "client-cookie-refresh",
+    )).rejects.toMatchObject(expected);
+
+    const persistedJar = CookieJar.deserializeSync(session.cookieJar);
+    expect(persistedJar.getCookieStringSync("https://channels.weixin.qq.com/"))
+      .toContain("send_refresh=latest");
+  });
+
+  it("uploads recipient-bound image chunks and sends the final opaque imgMsg", async () => {
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const finalImgMsg = {
+      aeskey: "platform-aes-key",
+      url: "platform-media-url",
+      nested: { untouched: [1, "two"] },
+    };
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async (input, init) => {
+        const path = new URL(String(input)).pathname;
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        calls.push({ path, body });
+        if (path.endsWith("/upload-media-info")) {
+          const chunk = Number(body.chunk);
+          return response({
+            errCode: 0,
+            data: {
+              baseResp: { errcode: 0 },
+              imgMsg: chunk === 1 ? finalImgMsg : { pending: true },
+            },
+          });
+        }
+        if (path.endsWith("/send-private-msg")) {
+          return response({
+            errCode: 0,
+            data: { baseResp: { errcode: 0 }, svrMsgId: "image-server-1" },
+          });
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+    }));
+    const bytes = new Uint8Array(512 * 1024 + 3).fill(0x61);
+    bytes.set([0x62, 0x63, 0x64], bytes.byteLength - 3);
+    let authorityChecks = 0;
+
+    await expect(gateway.sendImageReply(
+      fakePlatformSession(),
+      {
+        kind: "dm",
+        sessionId: "conversation-1",
+        fromUsername: "finder-self",
+        toUsername: "peer-1",
+      },
+      { mimeType: "image/png", bytes },
+      "image-client-1",
+      () => {
+        authorityChecks += 1;
+        return true;
+      },
+    )).resolves.toEqual({ accepted: true, externalId: "image-server-1" });
+
+    expect(calls.map((call) => call.path)).toEqual([
+      "/cgi-bin/mmfinderassistant-bin/private-msg/upload-media-info",
+      "/cgi-bin/mmfinderassistant-bin/private-msg/upload-media-info",
+      "/cgi-bin/mmfinderassistant-bin/private-msg/send-private-msg",
+    ]);
+    expect(authorityChecks).toBe(3);
+    const uploadBodies = calls.slice(0, 2).map((call) => call.body);
+    expect(uploadBodies.map((body) => body.chunk)).toEqual([0, 1]);
+    expect(uploadBodies.every((body) => body.chunks === 2)).toBe(true);
+    expect(uploadBodies.every((body) => body.fromUsername === "finder-self")).toBe(true);
+    expect(uploadBodies.every((body) => body.toUsername === "peer-1")).toBe(true);
+    expect(uploadBodies.every((body) => body.mediaSize === bytes.byteLength)).toBe(true);
+    expect(uploadBodies.every((body) => body.mediaType === 3)).toBe(true);
+    expect(uploadBodies.every((body) => body.md5 === createHash("md5").update(bytes).digest("hex")))
+      .toBe(true);
+    const aesKeys = new Set(uploadBodies.map((body) => String(body.aesKey)));
+    expect(aesKeys.size).toBe(1);
+    expect(Buffer.from([...aesKeys][0] ?? "", "base64")).toHaveLength(32);
+    const decodedChunks = uploadBodies.map((body) => {
+      const content = String(body.content);
+      expect(content.startsWith("data:application/octet-stream;base64,")).toBe(true);
+      return Buffer.from(content.slice(content.indexOf(",") + 1), "base64");
+    });
+    expect(Buffer.concat(decodedChunks)).toEqual(Buffer.from(bytes));
+    expect(calls[2]?.body).toMatchObject({
+      msgPack: {
+        sessionId: "conversation-1",
+        fromUsername: "finder-self",
+        toUsername: "peer-1",
+        msgType: 3,
+        imgMsg: finalImgMsg,
+        cliMsgId: "image-client-1",
+      },
+    });
+  });
+
+  it("keeps image upload errors deterministic and final-send errors ambiguous", async () => {
+    const uploadServerError = new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async () => response({}, 500),
+    });
+    await expect(uploadServerError.request("dmUploadMedia", {}, { jar: new CookieJar() }))
+      .rejects.toMatchObject({ endpoint: "dmUploadMedia", code: "http_500", ambiguous: false });
+
+    let invalidUploadCalls = 0;
+    const invalidUpload = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async () => {
+        invalidUploadCalls += 1;
+        return response({
+          errCode: 0,
+          data: { baseResp: { errcode: 0 }, imgMsg: [] },
+        });
+      },
+    }));
+    await expect(invalidUpload.sendImageReply(
+      fakePlatformSession(),
+      {
+        kind: "dm",
+        sessionId: "conversation-1",
+        fromUsername: "finder-self",
+        toUsername: "peer-1",
+      },
+      { mimeType: "image/png", bytes: new Uint8Array([1]) },
+      "image-client-invalid-upload",
+    )).rejects.toMatchObject({
+      endpoint: "dmUploadMedia",
+      code: "schema_changed:data.imgMsg",
+      ambiguous: false,
+    });
+    expect(invalidUploadCalls).toBe(1);
+
+    let call = 0;
+    const missingSendReceipt = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async () => {
+        call += 1;
+        return call === 1
+          ? response({
+              errCode: 0,
+              data: { baseResp: { errcode: 0 }, imgMsg: { opaque: true } },
+            })
+          : response({ errCode: 0, data: { baseResp: { errcode: 0 } } });
+      },
+    }));
+    await expect(missingSendReceipt.sendImageReply(
+      fakePlatformSession(),
+      {
+        kind: "dm",
+        sessionId: "conversation-1",
+        fromUsername: "finder-self",
+        toUsername: "peer-1",
+      },
+      { mimeType: "image/jpeg", bytes: new Uint8Array([1, 2, 3]) },
+      "image-client-2",
+    )).rejects.toMatchObject({
+      endpoint: "dmSendText",
       code: "platform_ack_missing",
       ambiguous: true,
     });
