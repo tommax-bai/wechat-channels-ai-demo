@@ -138,6 +138,14 @@ describe("multi-user demo flow", () => {
     await startLogin(server, visitor.cookie);
     await workers.runOnce();
 
+    // Age the baseline item so the watermark cannot be what blocks the reply: the stale message
+    // below is newer than everything stored and is held back purely by how late it was seen.
+    const sessionId = requireSessionId(database);
+    const aged = database?.prepare(
+      "UPDATE inbound_items SET occurred_at = ? WHERE session_id = ? AND source = 'dm'",
+    ).run(Date.now() - 9 * 3_600_000, sessionId);
+    expect(aged?.changes).toBe(1);
+
     // A lane that was blind for hours must not wake up and answer the whole backlog at once.
     gateway.newItems.set("finder-1", [
       fakeDm("stale-backlog", "finder-1", "六小时前发来的私信", Date.now() - 7 * 3_600_000),
