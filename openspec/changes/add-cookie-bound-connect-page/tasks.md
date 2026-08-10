@@ -42,5 +42,14 @@
 
 ## 6. Follow-up validation and delivery
 
-- [ ] 6.1 Run the full validation set and strict OpenSpec validation, then commit and fast-forward clean `main`.
-- [ ] 6.2 Visually verify the updated focused page, deploy only the Demo service to DEV, and record the delivery evidence.
+- [x] 6.1 Run the full validation set and strict OpenSpec validation, then commit and fast-forward clean `main`.
+- [x] 6.2 Visually verify the updated focused page, deploy only the Demo service to DEV, and record the delivery evidence.
+
+## Recruitment setting follow-up evidence
+
+- Code delivery: commit `f12b862` was fast-forwarded into clean standalone `main`; the focused page defaults newly created sessions to the recruitment provider and job ID `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`, while a retained account changes only after an explicit save.
+- Account-switch contract: focused integration coverage proves a newly bound Finder account appears exactly once in the existing `/api/sessions` account list and returns the same recruitment provider and job ID when selected on the dashboard.
+- Automated validation: 14 test files / 150 tests, lint, typecheck, build, `git diff --check`, and strict OpenSpec validation passed locally; the same 150 tests, lint, typecheck, and build passed in the DEV release using Alibaba Cloud's npm mirror.
+- Browser validation: the updated reply setting rendered at the default desktop viewport and at 390 x 844 with the requested default value; the browser console warning/error count was zero.
+- DEV delivery (2026-08-10): release `/opt/wechat-channels-ai-demo/releases/f12b862` is active. The previous release, root-owned environment and unit, and a WAL-consistent SQLite backup with `quick_check=ok` are retained at `/opt/wechat-channels-ai-demo/backups/20260810T055744Z-before-f12b862`.
+- DEV postcondition: only `wechat-channels-ai-demo.service` was restarted; it is active with `NRestarts=0`, public `/connect`, `/connect.js`, and `/connect.css` return 200, `/healthz` and `/readyz` pass, SQLite `quick_check=ok`, and the pre-deploy `5 sessions / 69 inbound / 11 replies / 3 QR assets` plus existing provider distribution were preserved. Nginx, all three AIDCP units, and all four isales units remain active with `NRestarts=0`, and the Demo emitted no warning/error lines during the final deployment window.
