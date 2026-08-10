@@ -22,11 +22,13 @@
 - [x] 4.1 Run focused tests, the full test suite, lint, typecheck, and build.
 - [x] 4.2 Validate the OpenSpec change strictly and reconcile task evidence.
 - [x] 4.3 Visually verify `/connect` in a local browser at desktop and narrow viewport sizes.
-- [ ] 4.4 Commit, fast-forward the clean main branch, deploy to DEV, and verify health plus the new page without restarting unrelated services.
+- [x] 4.4 Commit, fast-forward the clean main branch, deploy to DEV, and verify health plus the new page without restarting unrelated services.
 
 ## Evidence
 
 - Repository/worktree: `/Users/baitianxing/codes/wechat-channels-ai-demo.wt/add-cookie-bound-connect-page` on `codex/add-cookie-bound-connect-page`.
 - Automated validation: 14 test files / 149 tests passed; `npm run lint`, `npm run typecheck`, `npm run build`, and `git diff --check` passed.
 - Browser validation: `/connect` rendered the requested two-panel QR state at the default desktop viewport and at 390 × 844; refresh produced a different login QR and browser console warning/error count was zero.
-- Deployment: pending task 4.4.
+- DEV delivery (2026-08-10): code commit `40f084b` was fast-forwarded into clean standalone `main` and installed as `/opt/wechat-channels-ai-demo/releases/40f084b`. The previous `69cd558` release, root-owned environment and unit, and a WAL-consistent SQLite backup with `quick_check=ok` are retained at `/opt/wechat-channels-ai-demo/backups/20260810T053610Z-before-40f084b`.
+- Server validation: Alibaba Cloud's npm mirror install, 14 test files / 149 tests, lint, typecheck, and build passed before activation. Only `wechat-channels-ai-demo.service` was restarted; it is active with `NRestarts=0`, local and public HTTPS health passed, `/connect`, `/connect.js`, and `/connect.css` returned 200, HTTP redirected to HTTPS, the additive `linked_session_id` column exists, SQLite `quick_check=ok`, and the pre-deploy `4 sessions / 69 inbound / 11 replies / 3 QR assets` counts were preserved.
+- Isolation postcondition: Nginx, all three AIDCP units, and all four isales units remained active with `NRestarts=0`; the Demo emitted no warning/error lines during the deployment window.
