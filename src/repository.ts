@@ -34,6 +34,7 @@ export interface SourceRow {
   state: SourceState;
   baselineComplete: boolean;
   cursorEnvelope: string | null;
+  lastAttemptAt: number | null;
   lastSuccessAt: number | null;
   lastErrorCode: string | null;
   updatedAt: number;
@@ -96,6 +97,7 @@ interface RawSource {
   state: SourceState;
   baseline_complete: number;
   cursor_envelope: string | null;
+  last_attempt_at: number | null;
   last_success_at: number | null;
   last_error_code: string | null;
   updated_at: number;
@@ -229,7 +231,8 @@ export class DemoRepository {
         .prepare(`
           UPDATE source_states
           SET state = 'pending', baseline_complete = 0, cursor_envelope = NULL,
-              last_success_at = NULL, last_error_code = NULL, updated_at = ?
+              last_attempt_at = NULL, last_success_at = NULL,
+              last_error_code = NULL, updated_at = ?
           WHERE session_id = ?
         `)
         .run(now, id);
@@ -469,6 +472,53 @@ export class DemoRepository {
       .prepare("SELECT * FROM source_states WHERE session_id = ? AND source = ?")
       .get(id, source) as RawSource | undefined;
     return row ? mapSource(row) : null;
+  }
+
+  recoverCommentCursorTargetMissing(
+    id: string,
+    authGeneration: number,
+    now: number,
+  ): SourceRow | null {
+    const result = this.db
+      .prepare(`
+        UPDATE source_states
+        SET state = 'pending', baseline_complete = 0,
+            last_error_code = NULL, updated_at = ?
+        WHERE session_id = ? AND source = 'comment'
+          AND state = 'schema_changed'
+          AND last_error_code = 'schema_changed:post.cursor_target_missing'
+          AND cursor_envelope IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM demo_sessions
+            WHERE id = ? AND auth_generation = ?
+          )
+      `)
+      .run(now, id, id, authGeneration);
+    if (result.changes === 0) return null;
+    this.appendEvent(id, "connection.updated", "comment", now);
+    return this.getSource(id, "comment");
+  }
+
+  markCommentSyncAttempt(
+    id: string,
+    authGeneration: number,
+    cursorEnvelope: string,
+    now: number,
+  ): SourceRow | null {
+    const result = this.db
+      .prepare(`
+        UPDATE source_states
+        SET cursor_envelope = ?, last_attempt_at = ?, updated_at = ?
+        WHERE session_id = ? AND source = 'comment'
+          AND EXISTS (
+            SELECT 1 FROM demo_sessions
+            WHERE id = ? AND auth_generation = ?
+          )
+      `)
+      .run(cursorEnvelope, now, now, id, id, authGeneration);
+    if (result.changes === 0) return null;
+    this.appendEvent(id, "connection.updated", "comment", now);
+    return this.getSource(id, "comment");
   }
 
   updateSource(
@@ -951,6 +1001,7 @@ function mapSource(row: RawSource): SourceRow {
     state: row.state,
     baselineComplete: row.baseline_complete === 1,
     cursorEnvelope: row.cursor_envelope,
+    lastAttemptAt: row.last_attempt_at,
     lastSuccessAt: row.last_success_at,
     lastErrorCode: row.last_error_code,
     updatedAt: row.updated_at,

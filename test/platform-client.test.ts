@@ -96,9 +96,10 @@ describe("PrivateWechatGateway parsers", () => {
       .toBe("fingerprint-test");
   });
 
-  it("keeps objectId distinct from exportId and uses exportId as comment reply target", async () => {
+  it("scans only the first three posts once and ignores all continuation markers", async () => {
     const postBodies: Array<Record<string, unknown>> = [];
-    const transport = new WechatTransport({
+    const commentBodies: Array<Record<string, unknown>> = [];
+    const gateway = new PrivateWechatGateway(new WechatTransport({
       baseUrl: "https://channels.weixin.qq.com",
       timeoutMs: 1_000,
       maxResponseBytes: 100_000,
@@ -109,64 +110,69 @@ describe("PrivateWechatGateway parsers", () => {
           return response({
             errCode: 0,
             data: {
-              list: [
-                { objectId: "object-1", exportId: "export-9" },
-                { objectId: "object-2", exportId: "export-10" },
-              ],
+              list: Array.from({ length: 5 }, (_, index) => ({
+                objectId: `object-${index + 1}`,
+                exportId: `export-${index + 1}`,
+              })),
+              continueFlag: 1,
+              lastBuff: "post-continuation-must-be-ignored",
             },
           });
         }
         if (url.includes("/comment/comment_list")) {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          commentBodies.push(body);
           return response({
             errCode: 0,
             data: {
-              comment: [{
-                levelTwoComment: [],
-                commentId: "comment-1",
-                commentNickname: "访客",
-                commentContent: "价格是多少？",
-                commentHeadurl: "",
-                commentCreatetime: "1710000000",
-                commentLikeCount: 0,
-                lastBuff: "",
-                downContinueFlag: 0,
-                visibleFlag: 1,
-                readFlag: false,
-                displayFlag: 1,
-                username: "peer-1",
-                blacklistFlag: 0,
-                likeFlag: 0,
-              }],
+              comment: [commentRecord({
+                commentId: `comment-${String(body.exportId)}`,
+                commentContent: `来自 ${String(body.exportId)}`,
+                lastBuff: "comment-continuation-must-be-ignored",
+                downContinueFlag: 1,
+              })],
+              lastBuff: "comment-continuation-must-be-ignored",
+              downContinueFlag: 1,
             },
           });
         }
         throw new Error(`unexpected ${url}`);
       },
-    });
-    const gateway = new PrivateWechatGateway(transport);
-    const page = await gateway.syncComments(fakePlatformSession(), null);
-    const nextPage = await gateway.syncComments(fakePlatformSession(), page.cursor);
+    }));
 
-    expect(page.items).toHaveLength(1);
-    expect(page.hasMore).toBe(true);
-    expect(page.items[0]?.externalId).toBe("object-1:comment-1");
-    expect(page.items[0]?.target).toMatchObject({
-      kind: "comment",
-      postId: "export-9",
-      rootCommentId: "comment-1",
+    const page = await gateway.syncComments(fakePlatformSession(), null);
+
+    expect(postBodies).toHaveLength(1);
+    expect(postBodies[0]).toMatchObject({
+      currentPage: 1,
+      pageSize: 3,
+      userpageType: 0,
+      stickyOrder: false,
     });
-    expect(nextPage.hasMore).toBe(false);
-    expect(nextPage.items[0]?.externalId).toBe("object-2:comment-1");
-    expect(nextPage.items[0]?.target).toMatchObject({ postId: "export-10" });
-    expect(postBodies[0]?.userpageType).toBe(0);
-    expect(postBodies[0]?.stickyOrder).toBe(false);
+    expect(postBodies[0]).not.toHaveProperty("lastBuff");
     expect(postBodies[0]).not.toHaveProperty("onlyUnread");
-    expect(postBodies.every((body) => !Object.hasOwn(body, "lastBuff"))).toBe(true);
+    expect(commentBodies.map((body) => ({
+      exportId: body.exportId,
+      lastBuff: body.lastBuff,
+    }))).toEqual([
+      { exportId: "export-1", lastBuff: "" },
+      { exportId: "export-2", lastBuff: "" },
+      { exportId: "export-3", lastBuff: "" },
+    ]);
+    expect(page.items.map((item) => item.externalId)).toEqual([
+      "object-1:comment-export-1",
+      "object-2:comment-export-2",
+      "object-3:comment-export-3",
+    ]);
+    expect(page.items.map((item) => item.target.kind === "comment" && item.target.postId))
+      .toEqual(["export-1", "export-2", "export-3"]);
+    expect(page.cursor && JSON.parse(page.cursor)).toEqual({ v: 3, observedPosts: true });
+    expect(page.hasMore).toBe(false);
   });
 
-  it("pages posts by currentPage without depending on a post continuation buffer", async () => {
-    const postBodies: Array<Record<string, unknown>> = [];
-    const commentExportIds: string[] = [];
+  it("keeps repeated bounded reads on the same stable comment identity", async () => {
+    let postRequests = 0;
+    const commentLastBuffs: unknown[] = [];
     const gateway = new PrivateWechatGateway(new WechatTransport({
       baseUrl: "https://channels.weixin.qq.com",
       timeoutMs: 1_000,
@@ -174,35 +180,18 @@ describe("PrivateWechatGateway parsers", () => {
       fetchImpl: async (input, init) => {
         const url = String(input);
         if (url.includes("/post/post_list")) {
-          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-          postBodies.push(body);
-          if (body.currentPage === 1) {
-            return response({
-              errCode: 0,
-              data: {
-                list: [{ objectId: "object-page-1", exportId: "export-page-1" }],
-                continueFlag: 1,
-                lastBuff: "response-buffer-must-not-be-forwarded",
-              },
-            });
-          }
-          if (body.currentPage === 2) {
-            return response({
-              errCode: 0,
-              data: {
-                list: [{ objectId: "object-page-2", exportId: "export-page-2" }],
-                continueFlag: 0,
-              },
-            });
-          }
+          postRequests += 1;
+          return response({
+            errCode: 0,
+            data: { list: [{ objectId: "object-stable", exportId: "export-stable" }] },
+          });
         }
         if (url.includes("/comment/comment_list")) {
           const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-          if (typeof body.exportId !== "string") throw new Error("missing exportId");
-          commentExportIds.push(body.exportId);
+          commentLastBuffs.push(body.lastBuff);
           return response({
             errCode: 0,
-            data: { comment: [], downContinueFlag: 0 },
+            data: { comment: [commentRecord({ commentId: "comment-stable" })] },
           });
         }
         throw new Error(`unexpected ${url}`);
@@ -213,125 +202,15 @@ describe("PrivateWechatGateway parsers", () => {
     const first = await gateway.syncComments(session, null);
     const second = await gateway.syncComments(session, first.cursor);
 
-    expect(first.hasMore).toBe(true);
+    expect(postRequests).toBe(2);
+    expect(commentLastBuffs).toEqual(["", ""]);
+    expect(first.items[0]?.externalId).toBe("object-stable:comment-stable");
+    expect(second.items[0]?.externalId).toBe(first.items[0]?.externalId);
+    expect(first.hasMore).toBe(false);
     expect(second.hasMore).toBe(false);
-    expect(commentExportIds).toEqual(["export-page-1", "export-page-2"]);
-    expect(postBodies.map((body) => ({
-      currentPage: body.currentPage,
-      pageSize: body.pageSize,
-      userpageType: body.userpageType,
-      stickyOrder: body.stickyOrder,
-      hasLastBuff: Object.hasOwn(body, "lastBuff"),
-    }))).toEqual([
-      {
-        currentPage: 1,
-        pageSize: 20,
-        userpageType: 0,
-        stickyOrder: false,
-        hasLastBuff: false,
-      },
-      {
-        currentPage: 2,
-        pageSize: 20,
-        userpageType: 0,
-        stickyOrder: false,
-        hasLastBuff: false,
-      },
-    ]);
   });
 
-  it("keeps a paginated comment bound to the same post when the post list reorders", async () => {
-    let postRequests = 0;
-    const commentRequests: Array<{ exportId: string | null; lastBuff: string | null }> = [];
-    const transport = new WechatTransport({
-      baseUrl: "https://channels.weixin.qq.com",
-      timeoutMs: 1_000,
-      maxResponseBytes: 100_000,
-      fetchImpl: async (input, init) => {
-        const url = String(input);
-        if (url.includes("/post/post_list")) {
-          postRequests += 1;
-          const posts = [
-            { objectId: "object-a", exportId: "export-a" },
-            { objectId: "object-b", exportId: "export-b" },
-          ];
-          return response({
-            errCode: 0,
-            data: {
-              list: postRequests === 1 ? posts : posts.toReversed(),
-              continueFlag: 0,
-            },
-          });
-        }
-        if (url.includes("/comment/comment_list")) {
-          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-          const request = {
-            exportId: typeof body.exportId === "string" ? body.exportId : null,
-            lastBuff: typeof body.lastBuff === "string" ? body.lastBuff : null,
-          };
-          commentRequests.push(request);
-          if (request.exportId === "export-a" && request.lastBuff === "") {
-            return response({
-              errCode: 0,
-              data: {
-                comment: [commentRecord({
-                  commentId: "comment-a-1",
-                  commentContent: "A 第一页",
-                  lastBuff: "comment-a-next",
-                  downContinueFlag: 1,
-                })],
-                lastBuff: "comment-a-next",
-                downContinueFlag: 1,
-              },
-            });
-          }
-          if (request.exportId === "export-a" && request.lastBuff === "comment-a-next") {
-            return response({
-              errCode: 0,
-              data: {
-                comment: [commentRecord({
-                  commentId: "comment-a-2",
-                  commentContent: "A 第二页",
-                })],
-                downContinueFlag: 0,
-              },
-            });
-          }
-          if (request.exportId === "export-b" && request.lastBuff === "") {
-            return response({
-              errCode: 0,
-              data: {
-                comment: [commentRecord({
-                  commentId: "comment-b-1",
-                  commentContent: "B 第一页",
-                })],
-                downContinueFlag: 0,
-              },
-            });
-          }
-        }
-        throw new Error(`unexpected ${url}`);
-      },
-    });
-    const gateway = new PrivateWechatGateway(transport);
-    const session = fakePlatformSession();
-
-    const first = await gateway.syncComments(session, null);
-    const second = await gateway.syncComments(session, first.cursor);
-    const third = await gateway.syncComments(session, second.cursor);
-
-    expect(commentRequests).toEqual([
-      { exportId: "export-a", lastBuff: "" },
-      { exportId: "export-a", lastBuff: "comment-a-next" },
-      { exportId: "export-b", lastBuff: "" },
-    ]);
-    expect(first.items[0]?.externalId).toBe("object-a:comment-a-1");
-    expect(second.items[0]?.externalId).toBe("object-a:comment-a-2");
-    expect(third.items[0]?.externalId).toBe("object-b:comment-b-1");
-    expect(third.hasMore).toBe(false);
-  });
-
-  it("fails closed when the post pinned by a comment cursor disappears", async () => {
+  it("accepts an empty list before observing posts and rejects one afterward", async () => {
     let postRequests = 0;
     let commentRequests = 0;
     const gateway = new PrivateWechatGateway(new WechatTransport({
@@ -345,43 +224,291 @@ describe("PrivateWechatGateway parsers", () => {
           return response({
             errCode: 0,
             data: {
-              list: postRequests === 1
-                ? [
-                    { objectId: "object-a", exportId: "export-a" },
-                    { objectId: "object-b", exportId: "export-b" },
-                  ]
-                : [{ objectId: "object-b", exportId: "export-b" }],
+              list: postRequests === 2
+                ? [{ objectId: "object-first", exportId: "export-first" }]
+                : [],
               continueFlag: 0,
             },
           });
         }
         if (url.includes("/comment/comment_list")) {
           commentRequests += 1;
-          return response({
-            errCode: 0,
-            data: {
-              comment: [commentRecord({
-                commentId: "comment-a-1",
-                lastBuff: "comment-a-next",
-                downContinueFlag: 1,
-              })],
-              lastBuff: "comment-a-next",
-              downContinueFlag: 1,
-            },
-          });
+          return response({ errCode: 0, data: { comment: [] } });
         }
         throw new Error(`unexpected ${url}`);
       },
     }));
     const session = fakePlatformSession();
-    const first = await gateway.syncComments(session, null);
 
-    await expect(gateway.syncComments(session, first.cursor)).rejects.toMatchObject({
-      code: "schema_changed:post.cursor_target_missing",
+    const empty = await gateway.syncComments(session, null);
+    const observed = await gateway.syncComments(session, empty.cursor);
+
+    expect(empty.items).toEqual([]);
+    expect(empty.cursor && JSON.parse(empty.cursor)).toEqual({ v: 3, observedPosts: false });
+    expect(observed.cursor && JSON.parse(observed.cursor)).toEqual({ v: 3, observedPosts: true });
+    await expect(gateway.syncComments(session, observed.cursor)).rejects.toMatchObject({
+      code: "platform_post_list_empty",
       endpoint: "postList",
       ambiguous: false,
     });
     expect(commentRequests).toBe(1);
+  });
+
+  it("uses a legacy v2 cursor only as evidence that posts were observed", async () => {
+    const commentBodies: Array<Record<string, unknown>> = [];
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.includes("/post/post_list")) {
+          return response({
+            errCode: 0,
+            data: {
+              list: [{ objectId: "object-current", exportId: "export-current" }],
+            },
+          });
+        }
+        if (url.includes("/comment/comment_list")) {
+          commentBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return response({ errCode: 0, data: { comment: [] } });
+        }
+        throw new Error(`unexpected ${url}`);
+      },
+    }));
+    const legacyCursor = JSON.stringify({
+      v: 2,
+      postPage: 7,
+      postIndex: 1,
+      commentLastBuff: "legacy-comment-continuation",
+      postObjectId: "object-old-b",
+      postExportId: "export-old-b",
+      postSnapshot: [
+        { objectId: "object-old-a", exportId: "export-old-a" },
+        { objectId: "object-old-b", exportId: "export-old-b" },
+      ],
+      postPageHasMore: true,
+    });
+
+    const page = await gateway.syncComments(fakePlatformSession(), legacyCursor);
+
+    expect(commentBodies).toHaveLength(1);
+    expect(commentBodies[0]).toMatchObject({
+      exportId: "export-current",
+      lastBuff: "",
+    });
+    expect(page.cursor && JSON.parse(page.cursor)).toEqual({ v: 3, observedPosts: true });
+    expect(page.hasMore).toBe(false);
+  });
+
+  it("checkpoints the first observed post list before any comment request can fail", async () => {
+    const events: string[] = [];
+    const checkpoints: string[] = [];
+    let postRequests = 0;
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.includes("/post/post_list")) {
+          postRequests += 1;
+          return response({
+            errCode: 0,
+            data: {
+              list: postRequests === 1
+                ? [{ objectId: "object-first", exportId: "export-first" }]
+                : [],
+            },
+          });
+        }
+        if (url.includes("/comment/comment_list")) {
+          events.push("comment-request");
+          throw new Error("comment transport failed");
+        }
+        throw new Error(`unexpected ${url}`);
+      },
+    }));
+
+    await expect(gateway.syncComments(fakePlatformSession(), null, (cursor) => {
+      events.push("checkpoint");
+      checkpoints.push(cursor);
+    })).rejects.toMatchObject({
+      code: "network_error",
+      endpoint: "commentList",
+      ambiguous: false,
+    });
+
+    expect(events).toEqual(["checkpoint", "comment-request"]);
+    expect(checkpoints.map((cursor) => JSON.parse(cursor))).toEqual([
+      { v: 3, observedPosts: true },
+    ]);
+    await expect(gateway.syncComments(fakePlatformSession(), checkpoints[0]!))
+      .rejects.toMatchObject({
+        code: "platform_post_list_empty",
+        endpoint: "postList",
+        ambiguous: false,
+      });
+    expect(events).toEqual(["checkpoint", "comment-request"]);
+  });
+
+  it("treats a legacy v2 cursor as observed when the current post list is empty", async () => {
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async () => response({
+        errCode: 0,
+        data: { list: [], continueFlag: 0 },
+      }),
+    }));
+
+    await expect(gateway.syncComments(fakePlatformSession(), JSON.stringify({
+      v: 2,
+      postPage: 1,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: "object-old",
+      postExportId: "export-old",
+      postSnapshot: [{ objectId: "object-old", exportId: "export-old" }],
+      postPageHasMore: false,
+    })))
+      .rejects.toMatchObject({
+        code: "platform_post_list_empty",
+        endpoint: "postList",
+        ambiguous: false,
+      });
+  });
+
+  it("treats a complete legacy continuation cursor as observed even with an empty snapshot", async () => {
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async () => response({
+        errCode: 0,
+        data: { list: [], continueFlag: 0 },
+      }),
+    }));
+
+    await expect(gateway.syncComments(
+      fakePlatformSession(),
+      JSON.stringify({
+        v: 2,
+        postPage: 2,
+        postIndex: 0,
+        commentLastBuff: "",
+        postObjectId: null,
+        postExportId: null,
+        postSnapshot: [],
+        postPageHasMore: null,
+      }),
+    )).rejects.toMatchObject({
+      code: "platform_post_list_empty",
+      endpoint: "postList",
+      ambiguous: false,
+    });
+  });
+
+  it.each([
+    ["missing post page", {
+      v: 2,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: null,
+      postExportId: null,
+      postSnapshot: [],
+      postPageHasMore: null,
+    }],
+    ["invalid post page", {
+      v: 2,
+      postPage: 0,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: null,
+      postExportId: null,
+      postSnapshot: [],
+      postPageHasMore: null,
+    }],
+    ["wrong-typed post snapshot", {
+      v: 2,
+      postPage: 1,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: null,
+      postExportId: null,
+      postSnapshot: {},
+      postPageHasMore: null,
+    }],
+    ["empty snapshot with active post", {
+      v: 2,
+      postPage: 2,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: "object-old",
+      postExportId: "export-old",
+      postSnapshot: [],
+      postPageHasMore: null,
+    }],
+    ["snapshot item with empty id", {
+      v: 2,
+      postPage: 1,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: "object-old",
+      postExportId: "export-old",
+      postSnapshot: [{ objectId: "", exportId: "export-old" }],
+      postPageHasMore: false,
+    }],
+    ["active post does not match index", {
+      v: 2,
+      postPage: 1,
+      postIndex: 0,
+      commentLastBuff: "legacy-buff",
+      postObjectId: "object-other",
+      postExportId: "export-old",
+      postSnapshot: [{ objectId: "object-old", exportId: "export-old" }],
+      postPageHasMore: false,
+    }],
+    ["missing page continuation flag", {
+      v: 2,
+      postPage: 1,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: "object-old",
+      postExportId: "export-old",
+      postSnapshot: [{ objectId: "object-old", exportId: "export-old" }],
+    }],
+    ["duplicate snapshot identity", {
+      v: 2,
+      postPage: 1,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: "object-old",
+      postExportId: "export-old",
+      postSnapshot: [
+        { objectId: "object-old", exportId: "export-old" },
+        { objectId: "object-old", exportId: "export-old" },
+      ],
+      postPageHasMore: false,
+    }],
+  ])("rejects a malformed legacy v2 marker: %s", async (_caseName, cursor) => {
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async () => {
+        throw new Error("must not dispatch");
+      },
+    }));
+
+    await expect(gateway.syncComments(fakePlatformSession(), JSON.stringify(cursor)))
+      .rejects.toMatchObject({
+        code: "schema_changed:comment.cursor",
+        endpoint: "commentList",
+        ambiguous: false,
+      });
   });
 
   it("recursively normalizes nested comments with exact targets and flat write contexts", async () => {

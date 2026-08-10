@@ -69,12 +69,21 @@ interface CommentCursorV2 {
   postPageHasMore: boolean | null;
 }
 
+interface CommentObservationMarkerV3 {
+  v: 3;
+  observedPosts: boolean;
+}
+
 export interface WechatGateway {
   createLogin(qrTtlMs: number): Promise<PendingWechatLogin>;
   pollLogin(pending: PendingWechatLogin): Promise<LoginPollResult>;
   completeLoginCapture(session: PlatformSession): Promise<PlatformSession>;
   syncDirectMessages(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage>;
-  syncComments(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage>;
+  syncComments(
+    session: PlatformSession,
+    cursor: string | null,
+    onPostsObserved?: (cursor: string) => void,
+  ): Promise<WechatSyncPage>;
   sendReply(
     session: PlatformSession,
     target: ReplyTarget,
@@ -325,8 +334,12 @@ export class PrivateWechatGateway implements WechatGateway {
     };
   }
 
-  async syncComments(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage> {
-    const state = parseCommentCursor(cursor);
+  async syncComments(
+    session: PlatformSession,
+    cursor: string | null,
+    onPostsObserved?: (cursor: string) => void,
+  ): Promise<WechatSyncPage> {
+    const marker = parseCommentObservationMarker(cursor);
     const jar = this.transport.createJar(session.cookieJar);
     const context: RequestContext = {
       jar,
@@ -340,71 +353,57 @@ export class PrivateWechatGateway implements WechatGateway {
     const postsResult = await this.transport.request(
       "postList",
       {
-        currentPage: state.postPage,
-        pageSize: 20,
+        currentPage: 1,
+        pageSize: 3,
         userpageType: 0,
         stickyOrder: false,
       },
       context,
     );
-    const posts = arrayAt(postsResult.data, ["list", "postList"], "postList");
-    const postsHaveMore = pageHasMore(
-      postsResult.data,
-      posts,
-      ["continueFlag", "hasMore"],
-      20,
-      "postList",
-      "data.continueFlag",
-    );
-    if (posts.length === 0) {
-      if (postsHaveMore) {
-        throw new WechatApiError("schema_changed:post.empty_continuation", "postList", false);
-      }
-      if (state.postSnapshot.length > 0) {
-        throw new WechatApiError("schema_changed:post.cursor_target_missing", "postList", false);
+    const rawPosts = arrayAt(postsResult.data, ["list", "postList"], "postList");
+    if (rawPosts.length === 0) {
+      if (marker.observedPosts) {
+        throw new WechatApiError("platform_post_list_empty", "postList", false);
       }
       session.cookieJar = serializeJar(jar);
-      return { items: [], cursor: null, hasMore: false };
+      return {
+        items: [],
+        cursor: encodeCommentObservationMarker(false),
+        hasMore: false,
+      };
     }
-    const boundState = bindCommentPostCursor(
-      state,
-      posts,
-      postsHaveMore,
-    );
+
+    const posts = normalizeCommentPosts(rawPosts.slice(0, 3));
+    if (!marker.observedPosts) {
+      onPostsObserved?.(encodeCommentObservationMarker(true));
+    }
     const items: NormalizedInboundItem[] = [];
-    const objectId = boundState.postObjectId;
-    const exportId = boundState.postExportId;
-    const commentResult = await this.transport.request(
-      "commentList",
-      {
-        lastBuff: boundState.commentLastBuff,
-        exportId,
-        commentSelection: false,
-        forMcn: false,
-      },
-      context,
-    );
-    const comments = arrayAt(commentResult.data, ["comment", "comments", "list"], "commentList");
-    const commentsHaveMore = commentPageHasMore(commentResult.data, comments);
-    for (const rawComment of comments) {
-      items.push(...normalizeCommentTree(
-        rawComment,
-        session.finderUsername,
-        objectId,
-        exportId,
-      ));
+    for (const post of posts) {
+      const commentResult = await this.transport.request(
+        "commentList",
+        {
+          lastBuff: "",
+          exportId: post.exportId,
+          commentSelection: false,
+          forMcn: false,
+        },
+        context,
+      );
+      const comments = arrayAt(commentResult.data, ["comment", "comments", "list"], "commentList");
+      for (const rawComment of comments) {
+        items.push(...normalizeCommentTree(
+          rawComment,
+          session.finderUsername,
+          post.objectId,
+          post.exportId,
+        ));
+      }
     }
-    const nextState = nextCommentCursor(
-      boundState,
-      comments,
-      commentResult.data,
-      commentsHaveMore,
-    );
     session.cookieJar = serializeJar(jar);
     return {
       items,
-      cursor: nextState ? JSON.stringify(nextState) : null,
-      hasMore: nextState !== null,
+      cursor: encodeCommentObservationMarker(true),
+      hasMore: false,
     };
   }
 
@@ -602,69 +601,66 @@ function encodeDmCursor(value: Omit<DmCursorV1, "v">): string {
   return JSON.stringify({ v: 1, ...value } satisfies DmCursorV1);
 }
 
-function parseCommentCursor(raw: string | null): CommentCursorV2 {
-  if (raw === null) {
-    return emptyCommentCursor(1);
-  }
+function parseCommentObservationMarker(raw: string | null): CommentObservationMarkerV3 {
+  if (raw === null) return { v: 3, observedPosts: false };
   try {
-    const value = JSON.parse(raw) as Partial<CommentCursorV2>;
-    const postSnapshot = value.postSnapshot;
-    if (
-      value.v !== 2
-      || !Number.isInteger(value.postPage)
-      || (value.postPage ?? 0) < 1
-      || !Number.isInteger(value.postIndex)
-      || (value.postIndex ?? -1) < 0
-      || typeof value.commentLastBuff !== "string"
-      || (value.postObjectId !== null && typeof value.postObjectId !== "string")
-      || (value.postExportId !== null && typeof value.postExportId !== "string")
-      || !isCommentPostSnapshot(postSnapshot)
-      || (
-        value.postPageHasMore !== null
-        && typeof value.postPageHasMore !== "boolean"
-      )
-    ) {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (value.v === 2) {
+      parseLegacyCommentCursor(value);
+      return { v: 3, observedPosts: true };
+    }
+    if (value.v !== 3 || typeof value.observedPosts !== "boolean") {
       throw new Error("invalid");
     }
-    if (postSnapshot.length === 0) {
-      if (
-        value.postIndex !== 0
-        || value.commentLastBuff !== ""
-        || value.postObjectId !== null
-        || value.postExportId !== null
-        || value.postPageHasMore !== null
-      ) {
-        throw new Error("invalid");
-      }
-    } else {
-      const postIndex = value.postIndex as number;
-      const target = postSnapshot[postIndex];
-      if (
-        !target
-        || value.postObjectId !== target.objectId
-        || value.postExportId !== target.exportId
-        || typeof value.postPageHasMore !== "boolean"
-      ) {
-        throw new Error("invalid");
-      }
-    }
-    return value as CommentCursorV2;
+    return { v: 3, observedPosts: value.observedPosts };
   } catch {
     throw new WechatApiError("schema_changed:comment.cursor", "commentList", false);
   }
 }
 
-function emptyCommentCursor(postPage: number): CommentCursorV2 {
-  return {
-    v: 2,
-    postPage,
-    postIndex: 0,
-    commentLastBuff: "",
-    postObjectId: null,
-    postExportId: null,
-    postSnapshot: [],
-    postPageHasMore: null,
-  };
+function parseLegacyCommentCursor(value: Record<string, unknown>): CommentCursorV2 {
+  const candidate = value as unknown as Partial<CommentCursorV2>;
+  const postSnapshot = candidate.postSnapshot;
+  if (
+    candidate.v !== 2
+    || !Number.isInteger(candidate.postPage)
+    || (candidate.postPage ?? 0) < 1
+    || !Number.isInteger(candidate.postIndex)
+    || (candidate.postIndex ?? -1) < 0
+    || typeof candidate.commentLastBuff !== "string"
+    || (candidate.postObjectId !== null && typeof candidate.postObjectId !== "string")
+    || (candidate.postExportId !== null && typeof candidate.postExportId !== "string")
+    || !isCommentPostSnapshot(postSnapshot)
+    || (
+      candidate.postPageHasMore !== null
+      && typeof candidate.postPageHasMore !== "boolean"
+    )
+  ) {
+    throw new Error("invalid");
+  }
+  if (postSnapshot.length === 0) {
+    if (
+      candidate.postIndex !== 0
+      || candidate.commentLastBuff !== ""
+      || candidate.postObjectId !== null
+      || candidate.postExportId !== null
+      || candidate.postPageHasMore !== null
+    ) {
+      throw new Error("invalid");
+    }
+  } else {
+    assertUniquePostIdentities(postSnapshot);
+    const target = postSnapshot[candidate.postIndex as number];
+    if (
+      !target
+      || candidate.postObjectId !== target.objectId
+      || candidate.postExportId !== target.exportId
+      || typeof candidate.postPageHasMore !== "boolean"
+    ) {
+      throw new Error("invalid");
+    }
+  }
+  return candidate as CommentCursorV2;
 }
 
 function isCommentPostSnapshot(value: unknown): value is CommentPostIdentity[] {
@@ -678,18 +674,8 @@ function isCommentPostSnapshot(value: unknown): value is CommentPostIdentity[] {
   });
 }
 
-function requiredFlag(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-  endpoint: Parameters<typeof asRecord>[1],
-  field: string,
-): boolean {
-  for (const key of keys) {
-    const value = record[key];
-    if (value === true || value === 1 || value === "1") return true;
-    if (value === false || value === 0 || value === "0") return false;
-  }
-  throw new WechatApiError(`schema_changed:${field}`, endpoint, false);
+export function encodeCommentObservationMarker(observedPosts: boolean): string {
+  return JSON.stringify({ v: 3, observedPosts } satisfies CommentObservationMarkerV3);
 }
 
 function directMessagePageHasMore(
@@ -719,44 +705,7 @@ function directMessagePageHasMore(
   throw new WechatApiError("schema_changed:data.isContinue", endpoint, false);
 }
 
-function pageHasMore(
-  data: Record<string, unknown>,
-  rows: unknown[],
-  keys: readonly string[],
-  pageSize: number,
-  endpoint: Parameters<typeof asRecord>[1],
-  field: string,
-): boolean {
-  for (const key of keys) {
-    const value = data[key];
-    if (value === true || value === 1 || value === "1") return true;
-    if (value === false || value === 0 || value === "0") return false;
-  }
-  if (rows.length < pageSize) return false;
-  throw new WechatApiError(`schema_changed:${field}`, endpoint, false);
-}
-
-function commentPageHasMore(data: Record<string, unknown>, rows: unknown[]): boolean {
-  for (const key of ["downContinueFlag", "continueFlag", "hasMore"]) {
-    const value = data[key];
-    if (value === true || value === 1 || value === "1") return true;
-    if (value === false || value === 0 || value === "0") return false;
-  }
-  if (rows.length === 0) return false;
-  const last = asRecord(rows.at(-1), "commentList", "comment");
-  return requiredFlag(
-    last,
-    ["downContinueFlag"],
-    "commentList",
-    "comment.downContinueFlag",
-  );
-}
-
-function bindCommentPostCursor(
-  state: CommentCursorV2,
-  posts: unknown[],
-  postsHaveMore: boolean,
-): CommentCursorV2 & { postObjectId: string; postExportId: string } {
+function normalizeCommentPosts(posts: unknown[]): CommentPostIdentity[] {
   const observed = posts.map((rawPost) => {
     const post = asRecord(rawPost, "postList", "post");
     return {
@@ -775,32 +724,7 @@ function bindCommentPostCursor(
     };
   });
   assertUniquePostIdentities(observed);
-
-  if (state.postSnapshot.length === 0) {
-    const target = observed[state.postIndex];
-    if (!target) {
-      throw new WechatApiError("schema_changed:post.cursor_index", "postList", false);
-    }
-    return {
-      ...state,
-      postObjectId: target.objectId,
-      postExportId: target.exportId,
-      postSnapshot: observed,
-      postPageHasMore: postsHaveMore,
-    };
-  }
-
-  const target = state.postSnapshot[state.postIndex];
-  if (!target || !observed.some((post) => samePostIdentity(post, target))) {
-    throw new WechatApiError("schema_changed:post.cursor_target_missing", "postList", false);
-  }
-  if (
-    state.postPageHasMore !== postsHaveMore
-    || !samePostIdentitySet(observed, state.postSnapshot)
-  ) {
-    throw new WechatApiError("schema_changed:post.cursor_snapshot", "postList", false);
-  }
-  return state as CommentCursorV2 & { postObjectId: string; postExportId: string };
+  return observed;
 }
 
 function assertUniquePostIdentities(posts: CommentPostIdentity[]): void {
@@ -810,69 +734,8 @@ function assertUniquePostIdentities(posts: CommentPostIdentity[]): void {
   }
 }
 
-function samePostIdentitySet(
-  left: CommentPostIdentity[],
-  right: CommentPostIdentity[],
-): boolean {
-  if (left.length !== right.length) return false;
-  const rightKeys = new Set(right.map(postIdentityKey));
-  return left.every((post) => rightKeys.has(postIdentityKey(post)));
-}
-
-function samePostIdentity(
-  left: CommentPostIdentity,
-  right: CommentPostIdentity,
-): boolean {
-  return left.objectId === right.objectId && left.exportId === right.exportId;
-}
-
 function postIdentityKey(post: CommentPostIdentity): string {
   return JSON.stringify([post.objectId, post.exportId]);
-}
-
-function nextCommentCursor(
-  state: CommentCursorV2,
-  comments: unknown[],
-  commentData: Record<string, unknown>,
-  commentsHaveMore: boolean,
-): CommentCursorV2 | null {
-  if (commentsHaveMore) {
-    return {
-      ...state,
-      commentLastBuff: continuationBuffer(
-        commentData,
-        comments,
-        "commentList",
-        "comment.lastBuff",
-      ),
-    };
-  }
-  const nextPost = state.postSnapshot[state.postIndex + 1];
-  if (nextPost) {
-    return {
-      ...state,
-      postIndex: state.postIndex + 1,
-      commentLastBuff: "",
-      postObjectId: nextPost.objectId,
-      postExportId: nextPost.exportId,
-    };
-  }
-  if (!state.postPageHasMore) return null;
-  return emptyCommentCursor(state.postPage + 1);
-}
-
-function continuationBuffer(
-  data: Record<string, unknown>,
-  rows: unknown[],
-  endpoint: "postList" | "commentList",
-  field: string,
-): string {
-  const direct = optionalString(data, ["lastBuff", "nextCursor"]);
-  if (direct) return direct;
-  const last = rows.length > 0 ? asRecord(rows.at(-1), endpoint, "row") : null;
-  const nested = last ? optionalString(last, ["lastBuff", "nextCursor"]) : null;
-  if (nested) return nested;
-  throw new WechatApiError(`schema_changed:${field}`, endpoint, false);
 }
 
 function normalizeCommentTree(

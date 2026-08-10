@@ -34,11 +34,39 @@ describe("authenticated session persistence migration", () => {
         account_key_hash TEXT UNIQUE,
         last_error_code TEXT
       );
+      CREATE TABLE source_states (
+        session_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        state TEXT NOT NULL,
+        baseline_complete INTEGER NOT NULL DEFAULT 0,
+        cursor_envelope TEXT,
+        last_success_at INTEGER,
+        last_error_code TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, source)
+      );
     `);
     legacy.prepare(`
       INSERT INTO demo_sessions (
         id, created_at, updated_at, expires_at, auth_state, account_key_hash
       ) VALUES ('existing', 1, 1, 2, 'active', 'account-hash')
+    `).run();
+    legacy.prepare(`
+      INSERT INTO demo_sessions (
+        id, created_at, updated_at, expires_at, auth_state, account_key_hash
+      ) VALUES ('fresh', 2, 2, 3, 'baseline_sync', NULL)
+    `).run();
+    legacy.prepare(`
+      INSERT INTO source_states (
+        session_id, source, state, baseline_complete, cursor_envelope,
+        last_success_at, last_error_code, updated_at
+      ) VALUES ('existing', 'comment', 'healthy', 1, 'cursor', 1, NULL, 1)
+    `).run();
+    legacy.prepare(`
+      INSERT INTO source_states (
+        session_id, source, state, baseline_complete, cursor_envelope,
+        last_success_at, last_error_code, updated_at
+      ) VALUES ('fresh', 'comment', 'pending', 0, NULL, NULL, NULL, 2)
     `).run();
     legacy.close();
 
@@ -71,6 +99,14 @@ describe("authenticated session persistence migration", () => {
         expect.objectContaining({ name: "byte_length", notnull: 1 }),
         expect.objectContaining({ name: "updated_at", notnull: 1 }),
       ]));
+    expect(database.prepare(`
+      SELECT last_attempt_at AS lastAttemptAt
+      FROM source_states WHERE session_id = 'existing' AND source = 'comment'
+    `).get()).toEqual({ lastAttemptAt: 1 });
+    expect(database.prepare(`
+      SELECT last_attempt_at AS lastAttemptAt
+      FROM source_states WHERE session_id = 'fresh' AND source = 'comment'
+    `).get()).toEqual({ lastAttemptAt: null });
   });
 
   it("creates the account QR table idempotently and cascades account deletion", () => {

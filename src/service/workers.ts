@@ -13,6 +13,7 @@ import type {
 } from "../repository.js";
 import type {
   AccountQrAsset,
+  InboundSource,
   NormalizedInboundItem,
   PlatformSession,
   ReplyModelResult,
@@ -20,13 +21,17 @@ import type {
 import {
   WechatApiError,
 } from "../wechat/transport.js";
-import type {
-  PendingWechatLogin,
-  WechatGateway,
-  WechatSendResult,
-  WechatSyncPage,
+import {
+  encodeCommentObservationMarker,
+  type PendingWechatLogin,
+  type WechatGateway,
+  type WechatSendResult,
+  type WechatSyncPage,
 } from "../wechat/client.js";
 import type { StoredCredential } from "./credentials.js";
+
+const COMMENT_SYNC_POLL_MS = 60_000;
+const COMMENT_SYNC_WAKE_MS = 5_000;
 
 export class WorkerCoordinator {
   private timers: NodeJS.Timeout[] = [];
@@ -34,7 +39,7 @@ export class WorkerCoordinator {
   private readonly platformSessionLocks = new Map<string, Promise<void>>();
   private stopping = false;
   private authRunning = false;
-  private syncRunning = false;
+  private readonly syncRunning = new Set<InboundSource>();
   private replyRunning = false;
   private cleanupRunning = false;
 
@@ -60,11 +65,13 @@ export class WorkerCoordinator {
       );
     }
     this.schedule(() => this.authTick(), this.config.loginPollMs);
-    this.schedule(() => this.syncTick(), this.config.syncPollMs);
+    this.schedule(() => this.syncTick("dm"), this.config.syncPollMs);
+    this.schedule(() => this.syncTick("comment"), COMMENT_SYNC_WAKE_MS);
     this.schedule(() => this.replyTick(), this.config.workerPollMs);
     this.schedule(() => this.cleanupTick(), this.config.cleanupPollMs);
     this.runBackground(() => this.authTick());
-    this.runBackground(() => this.syncTick());
+    this.runBackground(() => this.syncTick("dm"));
+    this.runBackground(() => this.syncTick("comment"));
     this.runBackground(() => this.replyTick());
   }
 
@@ -77,7 +84,10 @@ export class WorkerCoordinator {
 
   async runOnce(): Promise<void> {
     await this.authTick();
-    await this.syncTick();
+    await Promise.all([
+      this.syncTick("dm"),
+      this.syncTick("comment", true),
+    ]);
     await this.replyTick();
     await this.cleanupTick();
   }
@@ -255,9 +265,12 @@ export class WorkerCoordinator {
     );
   }
 
-  private async syncTick(): Promise<void> {
-    if (this.syncRunning) return;
-    this.syncRunning = true;
+  private async syncTick(
+    source: InboundSource,
+    bypassCommentDue = false,
+  ): Promise<void> {
+    if (this.syncRunning.has(source)) return;
+    this.syncRunning.add(source);
     try {
       const sessions = this.repository.listSessionsByAuth(
         ["baseline_sync", "active", "stopped"],
@@ -266,29 +279,66 @@ export class WorkerCoordinator {
       await mapWithConcurrency(
         sessions,
         this.config.workerConcurrency,
-        (session) => this.syncSession(session),
+        (session) => this.syncSession(session, source, bypassCommentDue),
       );
     } finally {
-      this.syncRunning = false;
+      this.syncRunning.delete(source);
     }
   }
 
-  private async syncSession(session: SessionRow): Promise<void> {
+  private async syncSession(
+    session: SessionRow,
+    inboundSource: InboundSource,
+    bypassCommentDue: boolean,
+  ): Promise<void> {
     await this.withPlatformSessionLock(session.id, async () => {
       const current = this.repository.getSession(session.id);
-      if (!current || current.authGeneration !== session.authGeneration) return;
+      if (
+        !current
+        || current.authGeneration !== session.authGeneration
+        || current.authState === "auth_required"
+      ) return;
       const stored = this.readCredential(session.id);
       if (stored?.kind !== "session") return;
-      for (const source of this.repository.getSources(session.id)) {
-        if (source.state === "schema_changed" || source.state === "auth_required") continue;
-        await this.syncSource(current, stored.value, source);
-        const latest = this.repository.getSession(session.id);
-        if (
-          !latest
-          || latest.authGeneration !== session.authGeneration
-          || latest.authState === "auth_required"
-        ) break;
+      let source = this.repository.getSource(session.id, inboundSource);
+      let forceCommentSync = false;
+      if (!source || source.state === "auth_required") return;
+      if (source.state === "schema_changed") {
+        source = inboundSource === "comment"
+          ? this.repository.recoverCommentCursorTargetMissing(
+              session.id,
+              session.authGeneration,
+              Date.now(),
+            )
+          : null;
+        if (!source) return;
+        forceCommentSync = true;
       }
+      const commentDue = source.lastAttemptAt === null
+        || Date.now() - source.lastAttemptAt >= COMMENT_SYNC_POLL_MS;
+      if (
+        inboundSource === "comment"
+        && !bypassCommentDue
+        && !forceCommentSync
+        && !commentDue
+      ) return;
+      if (inboundSource === "comment") {
+        const attemptedAt = Date.now();
+        const cursorEnvelope = source.cursorEnvelope ?? this.secureStore.encryptJson(
+          null,
+          session.id,
+          "cursor:comment",
+        );
+        const attemptedSource = this.repository.markCommentSyncAttempt(
+          session.id,
+          session.authGeneration,
+          cursorEnvelope,
+          attemptedAt,
+        );
+        if (!attemptedSource) return;
+        source = attemptedSource;
+      }
+      await this.syncSource(current, stored.value, source);
       this.savePlatformSession(session.id, session.authGeneration, stored.value);
       this.repository.setSessionActiveIfBaselinesComplete(
         session.id,
@@ -311,11 +361,21 @@ export class WorkerCoordinator {
             `cursor:${source.source}`,
           )
         : null;
+      if (source.source === "comment" && cursor === null && source.baselineComplete) {
+        cursor = encodeCommentObservationMarker(true);
+      }
       let pageCount = 0;
       for (;;) {
         const page = source.source === "dm"
           ? await this.wechat.syncDirectMessages(platformSession, cursor)
-          : await this.wechat.syncComments(platformSession, cursor);
+          : await this.wechat.syncComments(
+              platformSession,
+              cursor,
+              (observedCursor) => this.checkpointCommentObservation(
+                session,
+                observedCursor,
+              ),
+            );
         const current = this.repository.getSession(session.id);
         if (!current || current.authGeneration !== session.authGeneration) return;
         this.persistPage(current, source, page);
@@ -373,6 +433,44 @@ export class WorkerCoordinator {
           Date.now(),
         );
       }
+    }
+  }
+
+  private checkpointCommentObservation(
+    session: SessionRow,
+    cursor: string,
+  ): void {
+    const latest = this.repository.getSource(session.id, "comment");
+    if (!latest) {
+      throw new WechatApiError(
+        "comment_observation_checkpoint_failed",
+        "postList",
+        false,
+      );
+    }
+    const cursorEnvelope = this.secureStore.encryptJson(
+      cursor,
+      session.id,
+      "cursor:comment",
+    );
+    if (!this.repository.updateSource(
+      session.id,
+      session.authGeneration,
+      "comment",
+      {
+        state: latest.state,
+        baselineComplete: latest.baselineComplete,
+        cursorEnvelope,
+        lastSuccessAt: latest.lastSuccessAt,
+        lastErrorCode: latest.lastErrorCode,
+      },
+      Date.now(),
+    )) {
+      throw new WechatApiError(
+        "comment_observation_checkpoint_failed",
+        "postList",
+        false,
+      );
     }
   }
 

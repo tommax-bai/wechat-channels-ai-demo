@@ -1117,6 +1117,203 @@ describe("multi-user demo flow", () => {
       .not.toHaveProperty("expiresAt");
   });
 
+  it("re-baselines the observed comment cursor failure without replying to recovered history", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    const sessionId = requireSessionId(database);
+    const session = repository.getSession(sessionId);
+    if (!session) throw new Error("missing test session");
+    const retained = fakeComment("retained-before-recovery", "已经保留的评论");
+    const retainedInboundId = "retained-before-recovery-inbound";
+    repository.insertInbound({
+      id: retainedInboundId,
+      sessionId,
+      source: "comment",
+      externalIdHash: secureStore.keyedHash(
+        retained.externalId,
+        `inbound:${sessionId}:comment`,
+      ),
+      payloadEnvelope: secureStore.encryptJson(
+        retained,
+        sessionId,
+        `inbound:${retainedInboundId}`,
+      ),
+      occurredAt: retained.occurredAt,
+      discoveredAt: Date.now(),
+      historical: true,
+      replyEligible: false,
+      authGeneration: session.authGeneration,
+      runGeneration: session.runGeneration,
+      platformClientId: "retained-before-recovery-client",
+    });
+    const legacyCursor = JSON.stringify({
+      v: 2,
+      postPage: 1,
+      postIndex: 0,
+      commentLastBuff: "",
+      postObjectId: "old-object",
+      postExportId: "old-export",
+      postSnapshot: [{ objectId: "old-object", exportId: "old-export" }],
+      postPageHasMore: false,
+    });
+    const legacyCursorEnvelope = secureStore.encryptJson(
+      legacyCursor,
+      sessionId,
+      "cursor:comment",
+    );
+    database?.prepare(`
+      UPDATE source_states
+      SET state = 'schema_changed', baseline_complete = 1,
+          cursor_envelope = ?,
+          last_error_code = 'schema_changed:post.cursor_target_missing',
+          updated_at = ?
+      WHERE session_id = ? AND source = 'comment'
+    `).run(legacyCursorEnvelope, Date.now(), sessionId);
+    gateway.newComments.set("finder-1", [
+      fakeComment("found-during-recovery", "恢复时发现的旧评论"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(repository.getSource(sessionId, "comment")).toMatchObject({
+      state: "healthy",
+      baselineComplete: true,
+      lastErrorCode: null,
+    });
+    const recoveredRows = database?.prepare(`
+      SELECT historical, reply_eligible AS replyEligible
+      FROM inbound_items
+      WHERE session_id = ? AND source = 'comment'
+      ORDER BY discovered_at, id
+    `).all(sessionId) as Array<{ historical: number; replyEligible: number }>;
+    expect(recoveredRows).toHaveLength(2);
+    expect(recoveredRows).toEqual([
+      { historical: 1, replyEligible: 0 },
+      { historical: 1, replyEligible: 0 },
+    ]);
+    expect(database?.prepare(
+      "SELECT COUNT(*) AS value FROM reply_jobs WHERE session_id = ?",
+    ).get(sessionId)).toEqual({ value: 0 });
+    expect(model.calls).toHaveLength(0);
+    expect(gateway.sends).toHaveLength(0);
+
+    gateway.newComments.set("finder-1", [
+      fakeComment("new-after-recovery", "恢复完成后的新评论"),
+    ]);
+    await workers.runOnce();
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "恢复完成后的新评论"))
+      .toMatchObject({ historical: false, replyState: "confirmed" });
+    expect(model.calls).toHaveLength(1);
+    expect(gateway.sends).toHaveLength(1);
+
+    database?.prepare(`
+      UPDATE source_states
+      SET state = 'schema_changed',
+          last_error_code = 'schema_changed:comment.commentId',
+          updated_at = ?
+      WHERE session_id = ? AND source = 'comment'
+    `).run(Date.now(), sessionId);
+    const commentCallsBefore = gateway.commentSyncCalls;
+    gateway.newComments.set("finder-1", [
+      fakeComment("must-remain-skipped", "不应解除的结构异常"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(gateway.commentSyncCalls).toBe(commentCallsBefore);
+    expect(repository.getSource(sessionId, "comment")).toMatchObject({
+      state: "schema_changed",
+      lastErrorCode: "schema_changed:comment.commentId",
+    });
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .some((item) => item.text === "不应解除的结构异常")).toBe(false);
+  });
+
+  it("keeps the observed-post checkpoint durable across comment failure and an empty post list", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    const sessionId = requireSessionId(database);
+    const session = repository.getSession(sessionId);
+    const existingSource = repository.getSource(sessionId, "comment");
+    if (!session || !existingSource) throw new Error("missing comment checkpoint fixture");
+    expect(repository.updateSource(
+      sessionId,
+      session.authGeneration,
+      "comment",
+      {
+        state: "pending",
+        baselineComplete: false,
+        cursorEnvelope: null,
+        lastSuccessAt: existingSource.lastSuccessAt,
+        lastErrorCode: null,
+      },
+      Date.now(),
+    )).toBe(true);
+
+    const observedCursor = JSON.stringify({ v: 3, observedPosts: true });
+    gateway.commentObservationCursor = observedCursor;
+    gateway.commentSyncError = new WechatApiError(
+      "network_error",
+      "commentList",
+      false,
+    );
+    await workers.runOnce();
+
+    const failedAfterObservation = repository.getSource(sessionId, "comment");
+    if (!failedAfterObservation?.cursorEnvelope) {
+      throw new Error("missing durable observed-post checkpoint");
+    }
+    expect(secureStore.decryptJson<string>(
+      failedAfterObservation.cursorEnvelope,
+      sessionId,
+      "cursor:comment",
+    )).toBe(observedCursor);
+    expect(failedAfterObservation).toMatchObject({
+      state: "error",
+      baselineComplete: false,
+      lastErrorCode: "network_error",
+    });
+
+    gateway.commentSyncError = new WechatApiError(
+      "platform_post_list_empty",
+      "postList",
+      false,
+    );
+    await workers.runOnce();
+    expect(repository.getSource(sessionId, "comment")).toMatchObject({
+      state: "error",
+      baselineComplete: false,
+      lastErrorCode: "platform_post_list_empty",
+    });
+
+    gateway.commentSyncError = null;
+    gateway.newComments.set("finder-1", [
+      fakeComment("historical-after-interrupted-baseline", "中断基线后的历史评论"),
+    ]);
+    await workers.runOnce();
+
+    expect(repository.getSource(sessionId, "comment")).toMatchObject({
+      state: "healthy",
+      baselineComplete: true,
+      lastErrorCode: null,
+    });
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "中断基线后的历史评论"))
+      .toMatchObject({ historical: true, replyState: null });
+    expect(database?.prepare(
+      "SELECT COUNT(*) AS value FROM reply_jobs WHERE session_id = ?",
+    ).get(sessionId)).toEqual({ value: 0 });
+    expect(model.calls).toHaveLength(0);
+    expect(gateway.sends).toHaveLength(0);
+  });
+
   it("cleans an abandoned unauthenticated session after its transient deadline", async () => {
     const server = requireApp(app);
     await bootstrap(server);

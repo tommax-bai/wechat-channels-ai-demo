@@ -90,16 +90,22 @@ export class FakeWechatGateway implements WechatGateway {
   }> = [];
   readonly newItems = new Map<string, NormalizedInboundItem[]>();
   readonly newComments = new Map<string, NormalizedInboundItem[]>();
+  readonly commentCursors: Array<string | null> = [];
   accountName: string | null = null;
   captureRequired = false;
   captureCalls = 0;
+  dmSyncCalls = 0;
+  commentSyncCalls = 0;
   dmSyncError: WechatApiError | null = null;
+  commentSyncError: WechatApiError | null = null;
+  commentObservationCursor: string | null = null;
   sendError: WechatApiError | null = null;
   imageSendError: WechatApiError | null = null;
   sendErrors: Array<WechatApiError | null> = [];
   historyPagesRemaining = 1;
   private readonly tokenAccounts = new Map<string, string>();
   private dmGate: AsyncGate | null = null;
+  private commentGate: AsyncGate | null = null;
   private captureGate: AsyncGate | null = null;
   private sendGate: AsyncGate | null = null;
   private sendAfterDispatchGate: AsyncGate | null = null;
@@ -145,6 +151,7 @@ export class FakeWechatGateway implements WechatGateway {
   }
 
   async syncDirectMessages(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage> {
+    this.dmSyncCalls += 1;
     const gate = this.dmGate;
     if (gate) {
       this.dmGate = null;
@@ -172,7 +179,25 @@ export class FakeWechatGateway implements WechatGateway {
     return { items, cursor: `cursor-${Date.now()}`, hasMore: false };
   }
 
-  async syncComments(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage> {
+  async syncComments(
+    session: PlatformSession,
+    cursor: string | null,
+    onPostsObserved?: (cursor: string) => void,
+  ): Promise<WechatSyncPage> {
+    this.commentSyncCalls += 1;
+    this.commentCursors.push(cursor);
+    const gate = this.commentGate;
+    if (gate) {
+      this.commentGate = null;
+      gate.markStarted();
+      await gate.wait;
+    }
+    if (this.commentObservationCursor) {
+      const observedCursor = this.commentObservationCursor;
+      this.commentObservationCursor = null;
+      onPostsObserved?.(observedCursor);
+    }
+    if (this.commentSyncError) throw this.commentSyncError;
     if (cursor === null) return { items: [], cursor: "comment-cursor-1", hasMore: false };
     const items = this.newComments.get(session.finderUsername) ?? [];
     this.newComments.set(session.finderUsername, []);
@@ -252,6 +277,12 @@ export class FakeWechatGateway implements WechatGateway {
   blockNextDmSync(): GateHandle {
     const gate = createGate();
     this.dmGate = gate.internal;
+    return gate.handle;
+  }
+
+  blockNextCommentSync(): GateHandle {
+    const gate = createGate();
+    this.commentGate = gate.internal;
     return gate.handle;
   }
 

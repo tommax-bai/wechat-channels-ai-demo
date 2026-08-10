@@ -53,6 +53,7 @@ export function openDatabase(path: string): SqliteDatabase {
       state TEXT NOT NULL,
       baseline_complete INTEGER NOT NULL DEFAULT 0 CHECK (baseline_complete IN (0, 1)),
       cursor_envelope TEXT,
+      last_attempt_at INTEGER,
       last_success_at INTEGER,
       last_error_code TEXT,
       updated_at INTEGER NOT NULL,
@@ -130,6 +131,22 @@ export function openDatabase(path: string): SqliteDatabase {
   if (!sessionColumns.some((column) => column.name === "funnel_job_number")) {
     db.exec("ALTER TABLE demo_sessions ADD COLUMN funnel_job_number TEXT");
   }
+  const sourceColumns = db.pragma("table_info(source_states)") as Array<{ name: string }>;
+  if (!sourceColumns.some((column) => column.name === "last_attempt_at")) {
+    db.exec("ALTER TABLE source_states ADD COLUMN last_attempt_at INTEGER");
+  }
+  db.exec(`
+    UPDATE source_states
+    SET last_attempt_at = updated_at
+    WHERE source = 'comment'
+      AND last_attempt_at IS NULL
+      AND (
+        state <> 'pending'
+        OR cursor_envelope IS NOT NULL
+        OR last_success_at IS NOT NULL
+        OR last_error_code IS NOT NULL
+      )
+  `);
   db.prepare(`
     UPDATE demo_sessions
     SET platform_persistent = 1,
