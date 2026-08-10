@@ -142,12 +142,17 @@ describe("focused connect page copy", () => {
     expect(publicSource).toContain("替换二维码");
     expect(html).toContain("删除二维码");
     expect(html).not.toContain("会话切换");
-    expect(html).not.toContain("回复模型");
+    expect(html).toContain("回复模型");
+    expect(html).toContain("回复设置");
+    expect(html).toContain("招聘接口");
+    expect(html).toContain('id="funnelJobNumber"');
+    expect(html).toContain('value="4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb"');
     expect(html).not.toContain("招聘岗位号");
     expect(html).not.toContain("消息与回复");
     expect(html).not.toContain("停止自动回复");
     expect(script).toContain('api("/api/connect")');
     expect(script).toContain('api("/api/connect/login"');
+    expect(script).toContain('api("/api/connect/reply-settings"');
     expect(script).toContain('api("/api/connect/wechat-qr"');
     expect(publicSource).not.toContain("doubao-seed-character-260628");
   });

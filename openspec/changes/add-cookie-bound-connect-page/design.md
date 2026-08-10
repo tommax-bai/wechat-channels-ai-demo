@@ -8,16 +8,16 @@ The platform identity is learned only after QR confirmation. A newly created tra
 
 **Goals:**
 
-- Serve a focused `/connect` page with only the two requested panels.
+- Serve a focused `/connect` page with the requested connection, recruitment reply setting, and business WeChat QR controls.
 - Automatically create and start a QR login when the browser has no valid focused-page binding.
 - Bind the browser to the retained account only after the platform returns a Finder identity.
 - Reuse the already retained account when the same Finder identity is scanned through a new transient session.
-- Scope business WeChat QR reads and mutations to the account bound to the focused page.
+- Scope reply settings and business WeChat QR reads/mutations to the account bound to the focused page.
 
 **Non-Goals:**
 
 - Replacing or removing the existing dashboard and shared-session switcher.
-- Changing worker polling, model/provider selection, content presentation, or partner APIs.
+- Changing worker polling, content presentation, or partner APIs.
 - Storing the raw Finder username in a browser cookie.
 - Adding user registration, passwords, access-control roles, or a new service.
 
@@ -31,7 +31,7 @@ This avoids putting a raw Finder identifier in browser state and prevents `/conn
 
 ### Provide focused endpoints instead of account-target headers
 
-`GET /api/connect` returns the focused projection and ensures a QR exists when no valid binding is present. `POST /api/connect/login` refreshes the login QR. Focused `/api/connect/wechat-qr` endpoints read or mutate only the resolved affinity account and do not accept an account ID header.
+`GET /api/connect` returns the focused projection and ensures a QR exists when no valid binding is present. `POST /api/connect/login` refreshes the login QR. `POST /api/connect/reply-settings` selects the recruitment provider and saves its job ID for the bound account. Focused `/api/connect/wechat-qr` endpoints read or mutate only the resolved affinity account and do not accept an account ID header.
 
 This keeps the page script simple and makes the browser binding the sole source of the current account for this page. Reusing the dashboard's `x-demo-account-id` endpoint was rejected because it would make the client carry and choose the account target explicitly.
 
@@ -45,12 +45,19 @@ The column is cleared whenever a session begins a new QR login. A durable handof
 
 The focused projection reuses `SessionService.snapshot` for current platform state and `get/set/deleteAccountWechatQr` for encrypted per-account asset storage. The new page renders only the required fields and does not receive private credentials or the Finder username.
 
+### Default only newly created focused sessions
+
+Before starting a QR for a newly created `/connect` session, set its account reply provider to `funnel` with job ID `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`. This makes the requested recruitment interface the effective default as soon as that new Finder account is retained.
+
+If the scan resolves to an account that was already retained, return its real provider and job ID. Do not rewrite that account during status polling; the focused page submits the bound reply-settings endpoint only when the visitor clicks save. This preserves existing account intent while providing the requested default for the new flow.
+
 ## Risks / Trade-offs
 
 - [A transient duplicate-login row remains until normal pending-session cleanup] → The handoff cookie is cleared immediately and the existing cleanup lifecycle removes the row; no extra cleanup worker is added.
 - [An affinity cookie can point to an account that later becomes unavailable] → The server clears the invalid affinity and starts one fresh pending login in the same request.
 - [GET `/api/connect` performs platform login creation on first visit] → This is the explicit requested behavior; subsequent polls reuse the pending cookie and do not create additional logins.
 - [The new page is still a Demo account surface] → Keep it on the existing service and do not add unrelated authentication or warning UI.
+- [A retained account may still use CHAT from an earlier setup] → Display that fact and provide one explicit save action that switches the bound account to the recruitment API with the entered job ID.
 
 ## Migration Plan
 

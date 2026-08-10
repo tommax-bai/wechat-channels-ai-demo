@@ -1,12 +1,34 @@
 ## ADDED Requirements
 
 ### Requirement: Focused connection page
-The service SHALL expose `/connect` as a standalone page containing only WeChat Channels login/hosting status, login QR controls, and the current account's business WeChat QR controls.
+The service SHALL expose `/connect` as a standalone page containing WeChat Channels login/hosting status, login QR controls, recruitment reply settings, and the current account's business WeChat QR controls.
 
 #### Scenario: Focused page excludes dashboard features
 - **WHEN** a visitor opens `/connect`
-- **THEN** the page shows the two requested account connection panels
-- **AND** it does not show session switching, model/provider selection, automation controls, private messages, comments, or reply history
+- **THEN** the page shows the requested account connection, recruitment reply setting, and business WeChat QR controls
+- **AND** it does not show session switching, CHAT model selection, automation controls, private messages, comments, or reply history
+
+### Requirement: Recruitment reply defaults and settings
+The service SHALL initialize every newly created focused-page login session with reply provider `funnel` and job ID `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`, and SHALL allow the bound account to save a non-empty job ID from `/connect`.
+
+#### Scenario: New focused session receives recruitment defaults
+- **WHEN** a browser without focused-page cookies requests focused status
+- **THEN** the created pending session uses the recruitment provider
+- **AND** its job ID is `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`
+
+#### Scenario: Bound account saves the job ID
+- **WHEN** a bound browser submits a non-empty job ID from the focused page
+- **THEN** the service selects the recruitment provider for that account
+- **AND** persists the submitted job ID
+
+#### Scenario: Already retained account is not overwritten by viewing
+- **WHEN** a focused login resolves to an already retained account with different reply settings
+- **THEN** focused status returns that account's real provider and job ID
+- **AND** the service changes them only after an explicit focused reply-settings submission
+
+#### Scenario: Pending login cannot update another account
+- **WHEN** a browser has not established account affinity
+- **THEN** a focused reply-settings mutation is rejected and cannot target a shared account
 
 ### Requirement: Missing browser binding starts one QR login
 The service SHALL create one transient focused-page session, start its platform QR login, and set a pending HTTP-only cookie when a browser requests focused status without a valid account-affinity or pending cookie.
@@ -76,3 +98,8 @@ The new focused-page cookies and endpoints SHALL NOT change the existing dashboa
 #### Scenario: Focused page creates or restores a binding
 - **WHEN** `/connect` creates a pending login or restores an account affinity
 - **THEN** it does not set, clear, or replace the dashboard owner and shared-selection cookies
+
+#### Scenario: Bound account appears in dashboard switching
+- **WHEN** a new Finder account completes focused-page login and becomes retained
+- **THEN** the existing dashboard session list includes that account exactly once
+- **AND** selecting it exposes the same recruitment provider and job ID saved from `/connect`

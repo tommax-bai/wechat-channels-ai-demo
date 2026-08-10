@@ -32,3 +32,15 @@
 - DEV delivery (2026-08-10): code commit `40f084b` was fast-forwarded into clean standalone `main` and installed as `/opt/wechat-channels-ai-demo/releases/40f084b`. The previous `69cd558` release, root-owned environment and unit, and a WAL-consistent SQLite backup with `quick_check=ok` are retained at `/opt/wechat-channels-ai-demo/backups/20260810T053610Z-before-40f084b`.
 - Server validation: Alibaba Cloud's npm mirror install, 14 test files / 149 tests, lint, typecheck, and build passed before activation. Only `wechat-channels-ai-demo.service` was restarted; it is active with `NRestarts=0`, local and public HTTPS health passed, `/connect`, `/connect.js`, and `/connect.css` returned 200, HTTP redirected to HTTPS, the additive `linked_session_id` column exists, SQLite `quick_check=ok`, and the pre-deploy `4 sessions / 69 inbound / 11 replies / 3 QR assets` counts were preserved.
 - Isolation postcondition: Nginx, all three AIDCP units, and all four isales units remained active with `NRestarts=0`; the Demo emitted no warning/error lines during the deployment window.
+
+## 5. Recruitment reply setting follow-up
+
+- [x] 5.1 Initialize new focused-page sessions with the recruitment provider and the requested default job ID.
+- [x] 5.2 Add the bound focused reply-settings endpoint and projection fields without changing existing dashboard APIs.
+- [x] 5.3 Add the `/connect` recruitment setting UI with the default job ID and an explicit save action.
+- [x] 5.4 Add focused integration and UI tests for defaults, explicit save, pending rejection, and retained-account preservation.
+
+## 6. Follow-up validation and delivery
+
+- [ ] 6.1 Run the full validation set and strict OpenSpec validation, then commit and fast-forward clean `main`.
+- [ ] 6.2 Visually verify the updated focused page, deploy only the Demo service to DEV, and record the delivery evidence.

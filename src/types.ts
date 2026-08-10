@@ -172,6 +172,8 @@ export interface ConnectSnapshot {
   qrDataUrl: string | null;
   qrExpiresAt: number | null;
   automationEnabled: boolean;
+  replyProvider: ReplyProvider;
+  funnelJobNumber: string | null;
   wechatQr: AccountWechatQrPreview | null;
 }
 

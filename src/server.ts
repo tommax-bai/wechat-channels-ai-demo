@@ -9,6 +9,7 @@ import Fastify, {
 } from "fastify";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
+import { DEFAULT_CONNECT_FUNNEL_JOB_NUMBER } from "./connect-defaults.js";
 import { registerPartnerApi } from "./partner-api.js";
 import {
   isSessionRetained,
@@ -34,6 +35,9 @@ const replyProviderBody = z.object({
 }).strict();
 const accountWechatQrBody = z.object({
   dataUrl: z.string().min(1),
+}).strict();
+const connectReplySettingsBody = z.object({
+  jobNumber: z.string().trim().min(1).max(128),
 }).strict();
 const selectSessionBody = z.object({
   sessionId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
@@ -115,6 +119,18 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     await deps.sessions.startLogin(existing.session);
     const current = deps.repository.getSession(existing.session.id) ?? existing.session;
     return connectSnapshot(current, existing.accountBound, deps);
+  });
+
+  app.post("/api/connect/reply-settings", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    const session = requireConnectAccount(request, reply, deps);
+    const body = connectReplySettingsBody.parse(request.body);
+    const updated = deps.sessions.setReplyProvider(
+      session,
+      "funnel",
+      body.jobNumber,
+    );
+    return connectSnapshot(updated, true, deps);
   });
 
   app.get("/api/connect/wechat-qr", async (request, reply) => {
@@ -378,8 +394,15 @@ async function createPendingConnectContext(
   reply: FastifyReply,
   deps: ServerDependencies,
 ): Promise<ConnectContext> {
+  if (!deps.config.funnelBaseUrl) throw new Error("funnel_provider_unavailable");
   const browser = deps.sessions.createBrowserSession();
-  await deps.sessions.startLogin(browser.row);
+  const providerConfigured = deps.sessions.setReplyProvider(
+    browser.row,
+    "funnel",
+    DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+  );
+  const configured = deps.sessions.setAutomation(providerConfigured, true);
+  await deps.sessions.startLogin(configured);
   reply.setCookie(
     connectPendingCookieName(deps.config),
     browser.token,
@@ -418,6 +441,8 @@ async function connectSnapshot(
     qrDataUrl: snapshot.qrDataUrl,
     qrExpiresAt: snapshot.qrExpiresAt,
     automationEnabled: snapshot.automationEnabled,
+    replyProvider: snapshot.replyProvider,
+    funnelJobNumber: snapshot.funnelJobNumber,
     wechatQr: accountBound ? deps.sessions.getAccountWechatQr(session) : null,
   };
 }

@@ -6,6 +6,10 @@ const elements = {
   accountName: document.querySelector("#accountName"),
   authHint: document.querySelector("#authHint"),
   refreshLoginButton: document.querySelector("#refreshLoginButton"),
+  replyProviderStatus: document.querySelector("#replyProviderStatus"),
+  funnelJobNumber: document.querySelector("#funnelJobNumber"),
+  saveReplySettings: document.querySelector("#saveReplySettings"),
+  replySettingsHint: document.querySelector("#replySettingsHint"),
   wechatQrStatus: document.querySelector("#wechatQrStatus"),
   wechatQrImage: document.querySelector("#wechatQrImage"),
   wechatQrEmpty: document.querySelector("#wechatQrEmpty"),
@@ -37,13 +41,18 @@ const errorLabels = {
   account_wechat_qr_invalid: "二维码文件无效，请选择 PNG 或 JPEG 图片",
   account_wechat_qr_too_large: "二维码文件不能超过 512 KiB",
   connect_account_required: "请先扫码登录视频号",
+  invalid_request: "岗位 ID 格式不正确",
 };
 
 const MAX_QR_BYTES = 512 * 1024;
+const DEFAULT_FUNNEL_JOB_NUMBER = "4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb";
 let current = null;
 let refreshing = false;
 let loginBusy = false;
 let qrBusy = false;
+let replySettingsBusy = false;
+let replySettingsDirty = false;
+let replySettingsIdentity = null;
 
 async function api(path, options = {}) {
   const headers = { ...options.headers };
@@ -90,7 +99,34 @@ function render(snapshot) {
   elements.authHint.textContent = authHint(snapshot);
   elements.refreshLoginButton.disabled = loginBusy;
   renderLoginStage(snapshot);
+  renderReplySettings(snapshot);
   renderWechatQr(snapshot);
+}
+
+function renderReplySettings(snapshot) {
+  const identity = snapshot.accountBound ? snapshot.accountDisplayName : null;
+  if (identity !== replySettingsIdentity) {
+    replySettingsIdentity = identity;
+    replySettingsDirty = false;
+  }
+  if (!replySettingsDirty) {
+    elements.funnelJobNumber.value = snapshot.funnelJobNumber || DEFAULT_FUNNEL_JOB_NUMBER;
+  }
+  const usingFunnel = snapshot.replyProvider === "funnel";
+  elements.replyProviderStatus.textContent = snapshot.accountBound
+    ? usingFunnel ? "招聘接口" : "当前为 CHAT回复"
+    : "招聘接口（默认）";
+  elements.replyProviderStatus.classList.toggle("warning", snapshot.accountBound && !usingFunnel);
+  elements.funnelJobNumber.disabled = !snapshot.accountBound || replySettingsBusy;
+  elements.saveReplySettings.disabled = !snapshot.accountBound || replySettingsBusy;
+  elements.saveReplySettings.textContent = usingFunnel ? "保存设置" : "保存并使用招聘接口";
+  if (!snapshot.accountBound) {
+    elements.replySettingsHint.textContent = "登录视频号后可保存";
+  } else if (!usingFunnel) {
+    elements.replySettingsHint.textContent = "保存后，当前账号将改用招聘接口回复。";
+  } else if (!replySettingsDirty) {
+    elements.replySettingsHint.textContent = "当前账号招聘岗位已配置";
+  }
 }
 
 function renderLoginStage(snapshot) {
@@ -168,6 +204,34 @@ async function refreshLogin() {
   } finally {
     loginBusy = false;
     elements.refreshLoginButton.disabled = false;
+  }
+}
+
+async function saveReplySettings() {
+  if (!current?.accountBound || replySettingsBusy) return;
+  const jobNumber = elements.funnelJobNumber.value.trim();
+  if (!jobNumber) {
+    elements.replySettingsHint.textContent = "请输入岗位 ID";
+    return;
+  }
+  replySettingsBusy = true;
+  let failure = null;
+  elements.replySettingsHint.textContent = "正在保存岗位设置…";
+  renderReplySettings(current);
+  try {
+    current = await api("/api/connect/reply-settings", {
+      method: "POST",
+      body: JSON.stringify({ jobNumber }),
+    });
+    replySettingsDirty = false;
+    render(current);
+    elements.replySettingsHint.textContent = "当前账号招聘岗位已保存";
+  } catch (error) {
+    failure = labelError(error.message);
+  } finally {
+    replySettingsBusy = false;
+    if (current) renderReplySettings(current);
+    if (failure) elements.replySettingsHint.textContent = failure;
   }
 }
 
@@ -249,6 +313,11 @@ function labelError(code) {
 }
 
 elements.refreshLoginButton.addEventListener("click", refreshLogin);
+elements.funnelJobNumber.addEventListener("input", () => {
+  replySettingsDirty = true;
+  elements.replySettingsHint.textContent = "岗位 ID 尚未保存";
+});
+elements.saveReplySettings.addEventListener("click", saveReplySettings);
 elements.wechatQrChoose.addEventListener("click", () => elements.wechatQrFile.click());
 elements.wechatQrFile.addEventListener("change", () => uploadWechatQr(elements.wechatQrFile.files?.[0]));
 elements.wechatQrDelete.addEventListener("click", deleteWechatQr);

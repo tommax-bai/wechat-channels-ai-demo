@@ -41,6 +41,38 @@
         </div>
       </section>
 
+      <section class="panel reply-panel" aria-labelledby="replySettingsTitle">
+        <header class="panel-heading compact-heading">
+          <div>
+            <p class="kicker">当前账号</p>
+            <h2 id="replySettingsTitle">回复设置</h2>
+          </div>
+          <span id="replyProviderStatus" class="status-badge">招聘接口</span>
+        </header>
+
+        <div class="reply-settings-grid">
+          <div class="reply-provider-copy">
+            <small>回复模型</small>
+            <strong>招聘接口</strong>
+            <p>评论与私信将分别调用招聘接口对应的回复能力。</p>
+          </div>
+          <div class="job-setting">
+            <label for="funnelJobNumber">岗位 ID</label>
+            <input
+              id="funnelJobNumber"
+              type="text"
+              value="4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb"
+              maxlength="128"
+              autocomplete="off"
+              spellcheck="false"
+              disabled
+            />
+            <button id="saveReplySettings" class="button primary" type="button" disabled>保存设置</button>
+            <p id="replySettingsHint" class="action-hint" role="status">登录视频号后可保存</p>
+          </div>
+        </div>
+      </section>
+
       <section class="panel wechat-panel" aria-labelledby="wechatQrTitle">
         <header class="panel-heading compact-heading">
           <div>

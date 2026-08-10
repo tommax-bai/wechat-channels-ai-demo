@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SecureStore } from "../src/crypto.js";
+import { DEFAULT_CONNECT_FUNNEL_JOB_NUMBER } from "../src/connect-defaults.js";
 import { openDatabase, type SqliteDatabase } from "../src/database.js";
 import { DemoRepository } from "../src/repository.js";
 import { buildServer } from "../src/server.js";
@@ -27,7 +28,7 @@ describe("cookie-bound connect page", () => {
   let workers: WorkerCoordinator;
 
   beforeEach(async () => {
-    const config = testConfig();
+    const config = testConfig({ funnelBaseUrl: "http://funnel.example.test" });
     database = openDatabase(":memory:");
     repository = new DemoRepository(database);
     gateway = new FakeWechatGateway();
@@ -62,6 +63,8 @@ describe("cookie-bound connect page", () => {
       accountBound: false,
       authState: "qr_pending",
       accountDisplayName: null,
+      replyProvider: "funnel",
+      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
       wechatQr: null,
     });
     expect(first.json<ConnectSnapshot>().qrDataUrl).toMatch(/^data:image\/png;base64,/);
@@ -89,6 +92,14 @@ describe("cookie-bound connect page", () => {
     });
     expect(rejected.statusCode).toBe(401);
     expect(rejected.json()).toEqual({ error: "connect_account_required" });
+    const rejectedReplySettings = await server.inject({
+      method: "POST",
+      url: "/api/connect/reply-settings",
+      headers: { cookie: pending, origin: "http://localhost:4310" },
+      payload: { jobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER },
+    });
+    expect(rejectedReplySettings.statusCode).toBe(401);
+    expect(rejectedReplySettings.json()).toEqual({ error: "connect_account_required" });
   });
 
   it("binds a newly authenticated Finder account and restores it later", async () => {
@@ -108,6 +119,8 @@ describe("cookie-bound connect page", () => {
       accountBound: true,
       authState: "active",
       accountDisplayName: "账号 finder-cookie-bound",
+      replyProvider: "funnel",
+      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
     });
     const affinity = responseCookie(bound.headers["set-cookie"], AFFINITY_COOKIE);
     expect(affinity).not.toContain("finder-cookie-bound");
@@ -187,6 +200,79 @@ describe("cookie-bound connect page", () => {
         AND last_error_code = 'account_already_connected'
     `).get() as { count: number } | undefined;
     expect(linkedRows?.count).toBe(1);
+  });
+
+  it("preserves a retained CHAT account until explicit save and lists it once on the dashboard", async () => {
+    const server = requireApp(app);
+    gateway.accountName = "finder-existing-chat";
+    const owner = await server.inject({ method: "GET", url: "/api/session" });
+    const ownerCookie = responseCookie(
+      owner.headers["set-cookie"],
+      "wechat_demo_session",
+    );
+    const ownerLogin = await server.inject({
+      method: "POST",
+      url: "/api/session/login",
+      headers: { cookie: ownerCookie, origin: "http://localhost:4310" },
+      payload: {},
+    });
+    expect(ownerLogin.statusCode).toBe(200);
+    await workers.runOnce();
+
+    const focused = await server.inject({ method: "GET", url: "/api/connect" });
+    const pending = responseCookie(focused.headers["set-cookie"], PENDING_COOKIE);
+    await workers.runOnce();
+    const bound = await server.inject({
+      method: "GET",
+      url: "/api/connect",
+      headers: { cookie: pending },
+    });
+    expect(bound.json<ConnectSnapshot>()).toMatchObject({
+      accountBound: true,
+      accountDisplayName: "账号 finder-existing-chat",
+      replyProvider: "chat-llm",
+      funnelJobNumber: null,
+    });
+    const affinity = responseCookie(bound.headers["set-cookie"], AFFINITY_COOKIE);
+
+    const saved = await server.inject({
+      method: "POST",
+      url: "/api/connect/reply-settings",
+      headers: { cookie: affinity, origin: "http://localhost:4310" },
+      payload: { jobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json<ConnectSnapshot>()).toMatchObject({
+      replyProvider: "funnel",
+      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+    });
+
+    const shared = await server.inject({ method: "GET", url: "/api/sessions" });
+    const sessions = shared.json<{
+      sessions: Array<{
+        sessionId: string;
+        accountDisplayName: string;
+        replyProvider: string;
+        funnelJobNumber: string | null;
+      }>;
+    }>().sessions;
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      accountDisplayName: "账号 finder-existing-chat",
+      replyProvider: "funnel",
+      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+    });
+    const selected = await server.inject({
+      method: "POST",
+      url: "/api/sessions/select",
+      headers: { origin: "http://localhost:4310" },
+      payload: { sessionId: sessions[0]?.sessionId },
+    });
+    expect(selected.statusCode).toBe(200);
+    expect(selected.json()).toMatchObject({
+      replyProvider: "funnel",
+      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+    });
   });
 
   it("uploads, replaces, reads, and deletes the bound account business QR", async () => {

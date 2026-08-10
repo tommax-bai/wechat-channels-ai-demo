@@ -201,6 +201,70 @@ h2 { font-size: 24px; }
   padding: 30px 34px 34px;
 }
 
+.reply-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(340px, 1.2fr);
+  gap: 42px;
+  align-items: center;
+  padding: 30px 34px 34px;
+}
+
+.reply-provider-copy small,
+.reply-provider-copy strong {
+  display: block;
+}
+
+.reply-provider-copy small,
+.job-setting label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.reply-provider-copy strong {
+  margin-top: 7px;
+  font-size: 24px;
+  letter-spacing: -0.03em;
+}
+
+.reply-provider-copy p {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.job-setting {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 9px 10px;
+  align-items: end;
+}
+
+.job-setting label,
+.job-setting .action-hint {
+  grid-column: 1 / -1;
+}
+
+.job-setting input {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  outline: none;
+  color: var(--ink);
+  background: #fbfdfb;
+  font-size: 12px;
+}
+
+.job-setting input:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(26, 173, 91, 0.1);
+}
+
+.job-setting input:disabled { color: var(--muted); background: #f2f5f3; }
+
 .wechat-preview {
   display: grid;
   min-height: 230px;
@@ -262,6 +326,9 @@ h2 { font-size: 24px; }
   .panel { border-radius: 20px; }
   .panel-heading { padding: 23px 20px 19px; }
   .login-grid, .wechat-grid { grid-template-columns: 1fr; gap: 23px; padding: 22px 20px 24px; }
+  .reply-settings-grid { grid-template-columns: 1fr; gap: 22px; padding: 22px 20px 24px; }
+  .job-setting { grid-template-columns: 1fr; }
+  .job-setting label, .job-setting .action-hint { grid-column: auto; }
   .login-stage { min-height: 270px; }
   .account-name { font-size: 31px; }
   .wechat-preview, .wechat-preview img { min-height: 260px; height: 260px; }
