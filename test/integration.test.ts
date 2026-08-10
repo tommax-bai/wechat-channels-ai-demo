@@ -1219,18 +1219,24 @@ describe("multi-user demo flow", () => {
     `).run(Date.now(), sessionId);
     const commentCallsBefore = gateway.commentSyncCalls;
     gateway.newComments.set("finder-1", [
-      fakeComment("must-remain-skipped", "不应解除的结构异常"),
+      fakeComment("recovers-without-rescan", "结构异常退避后恢复"),
     ]);
 
     await workers.runOnce();
 
-    expect(gateway.commentSyncCalls).toBe(commentCallsBefore);
+    // An unrelated schema error no longer ends the lane. It keeps its cursor and baseline, waits
+    // out the schema backoff, and resumes on the next attempt — the direct-message incident showed
+    // that a terminal state here turns one bad response into an outage only a rescan can clear.
+    expect(gateway.commentSyncCalls).toBe(commentCallsBefore + 1);
     expect(repository.getSource(sessionId, "comment")).toMatchObject({
-      state: "schema_changed",
-      lastErrorCode: "schema_changed:comment.commentId",
+      state: "healthy",
+      baselineComplete: true,
+      lastErrorCode: null,
+      consecutiveFailures: 0,
+      nextAttemptAt: null,
     });
     expect((await snapshot(server, visitor.cookie)).timeline
-      .some((item) => item.text === "不应解除的结构异常")).toBe(false);
+      .some((item) => item.text === "结构异常退避后恢复")).toBe(true);
   });
 
   it("keeps the observed-post checkpoint durable across comment failure and an empty post list", async () => {
@@ -1253,6 +1259,8 @@ describe("multi-user demo flow", () => {
         cursorEnvelope: null,
         lastSuccessAt: existingSource.lastSuccessAt,
         lastErrorCode: null,
+        consecutiveFailures: 0,
+        nextAttemptAt: null,
       },
       Date.now(),
     )).toBe(true);
@@ -1286,6 +1294,10 @@ describe("multi-user demo flow", () => {
       "postList",
       false,
     );
+    // The first failure scheduled a backoff, so a forced tick alone would be skipped. Clearing the
+    // pending delay is what "attempt again now" means once retries are paced; the pacing itself is
+    // covered by its own tests rather than being silently bypassed here.
+    clearRetryDelay(database, sessionId, "comment");
     await workers.runOnce();
     expect(repository.getSource(sessionId, "comment")).toMatchObject({
       state: "error",
@@ -1294,6 +1306,7 @@ describe("multi-user demo flow", () => {
     });
 
     gateway.commentSyncError = null;
+    clearRetryDelay(database, sessionId, "comment");
     gateway.newComments.set("finder-1", [
       fakeComment("historical-after-interrupted-baseline", "中断基线后的历史评论"),
     ]);
@@ -1448,6 +1461,20 @@ async function snapshot(app: FastifyInstance, cookie: string): Promise<SessionSn
 function requireApp(app: FastifyInstance | undefined): FastifyInstance {
   if (!app) throw new Error("test app was not created");
   return app;
+}
+
+/** Forces the next attempt of an already-failed source without waiting out its backoff. */
+function clearRetryDelay(
+  database: SqliteDatabase | undefined,
+  sessionId: string,
+  source: "dm" | "comment",
+): void {
+  const result = database?.prepare(
+    "UPDATE source_states SET next_attempt_at = NULL WHERE session_id = ? AND source = ?",
+  ).run(sessionId, source);
+  if (!result || result.changes !== 1) {
+    throw new Error("missing source row to clear the retry delay");
+  }
 }
 
 function requireSessionId(database: SqliteDatabase | undefined): string {

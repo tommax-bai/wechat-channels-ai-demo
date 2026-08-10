@@ -5,6 +5,7 @@ import { DemoRepository } from "../src/repository.js";
 import type { StoredCredential } from "../src/service/credentials.js";
 import { WorkerCoordinator } from "../src/service/workers.js";
 import type { SourceState } from "../src/types.js";
+import { WechatApiError } from "../src/wechat/transport.js";
 import {
   FakeReplyModel,
   FakeWechatGateway,
@@ -99,6 +100,8 @@ describe("WorkerCoordinator scheduling", () => {
           cursorEnvelope: completedSource.cursorEnvelope,
           lastSuccessAt: attemptedAt + 1_000,
           lastErrorCode: errorCode,
+          consecutiveFailures: 0,
+          nextAttemptAt: null,
         },
         attemptedAt + 1_000,
       );
@@ -316,6 +319,149 @@ describe("WorkerCoordinator scheduling", () => {
   });
 });
 
+describe("WorkerCoordinator source retry pacing", () => {
+  let database: SqliteDatabase | undefined;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    database?.close();
+    database = undefined;
+  });
+
+  function dmFixture(now: number) {
+    const config = testConfig();
+    database = openDatabase(":memory:");
+    const repository = new DemoRepository(database);
+    const secureStore = new SecureStore(config.encryptionKey);
+    const gateway = new FakeWechatGateway();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    authenticateFixture(repository, secureStore, now, {
+      state: "healthy",
+      baselineComplete: true,
+      errorCode: null,
+    });
+    return { config, repository, secureStore, gateway };
+  }
+
+  function dmSource(repository: DemoRepository) {
+    const source = repository.getSource("session-1", "dm");
+    if (!source) throw new Error("missing dm source");
+    return source;
+  }
+
+  it("schedules a retry for a transient direct-message failure and clears it on success", async () => {
+    const start = 5_000_000;
+    const { config, repository, secureStore, gateway } = dmFixture(start);
+    gateway.dmSyncError = new WechatApiError("dm_cursor_unavailable", "dmLoginCookie", false);
+    const workers = createWorkers(config, repository, secureStore, gateway);
+
+    await workers.runOnce();
+    expect(dmSource(repository)).toMatchObject({
+      state: "error",
+      lastErrorCode: "dm_cursor_unavailable",
+      consecutiveFailures: 1,
+      nextAttemptAt: start + config.syncPollMs,
+    });
+
+    vi.spyOn(Date, "now").mockReturnValue(start + config.syncPollMs - 1);
+    await workers.runOnce();
+    expect(dmSource(repository).consecutiveFailures).toBe(1);
+
+    gateway.dmSyncError = null;
+    vi.spyOn(Date, "now").mockReturnValue(start + config.syncPollMs);
+    await workers.runOnce();
+    expect(dmSource(repository)).toMatchObject({
+      state: "healthy",
+      lastErrorCode: null,
+      consecutiveFailures: 0,
+      nextAttemptAt: null,
+    });
+  });
+
+  it("doubles the direct-message retry delay per consecutive failure and stops at the cap", async () => {
+    const start = 6_000_000;
+    const { config, repository, secureStore, gateway } = dmFixture(start);
+    gateway.dmSyncError = new WechatApiError("network_error", "dmHistory", false);
+    const workers = createWorkers(config, repository, secureStore, gateway);
+
+    const delays: number[] = [];
+    let clock = start;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      vi.spyOn(Date, "now").mockReturnValue(clock);
+      await workers.runOnce();
+      const source = dmSource(repository);
+      if (source.nextAttemptAt === null) throw new Error("missing scheduled retry");
+      delays.push(source.nextAttemptAt - clock);
+      clock = source.nextAttemptAt;
+    }
+    expect(delays).toEqual([
+      config.syncPollMs,
+      config.syncPollMs * 2,
+      config.syncPollMs * 4,
+      config.syncPollMs * 8,
+    ]);
+
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      vi.spyOn(Date, "now").mockReturnValue(clock);
+      await workers.runOnce();
+      const source = dmSource(repository);
+      if (source.nextAttemptAt === null) throw new Error("missing scheduled retry");
+      clock = source.nextAttemptAt;
+    }
+    const capped = dmSource(repository);
+    if (capped.nextAttemptAt === null) throw new Error("missing scheduled retry");
+    expect(capped.nextAttemptAt - capped.updatedAt).toBe(1_800_000);
+  });
+
+  it("retries a direct-message schema change after its slower floor without a fresh scan", async () => {
+    const start = 7_000_000;
+    const { config, repository, secureStore, gateway } = dmFixture(start);
+    gateway.dmSyncError = new WechatApiError("schema_changed:data.msg", "dmHistory", false);
+    const workers = createWorkers(config, repository, secureStore, gateway);
+
+    await workers.runOnce();
+    expect(dmSource(repository)).toMatchObject({
+      state: "schema_changed",
+      lastErrorCode: "schema_changed:data.msg",
+      nextAttemptAt: start + 300_000,
+    });
+
+    // The lane used to end here for the life of the credential. It must resume by itself.
+    gateway.dmSyncError = null;
+    vi.spyOn(Date, "now").mockReturnValue(start + 300_000);
+    await workers.runOnce();
+    expect(dmSource(repository)).toMatchObject({
+      state: "healthy",
+      lastErrorCode: null,
+      consecutiveFailures: 0,
+      nextAttemptAt: null,
+    });
+    const session = repository.getSession("session-1");
+    expect(session?.authGeneration).toBe(0);
+  });
+
+  it("honors a persisted retry delay across a restart", async () => {
+    const start = 8_000_000;
+    const { config, repository, secureStore, gateway } = dmFixture(start);
+    gateway.dmSyncError = new WechatApiError("network_error", "dmHistory", false);
+    await createWorkers(config, repository, secureStore, gateway).runOnce();
+    expect(dmSource(repository).consecutiveFailures).toBe(1);
+
+    gateway.dmSyncError = null;
+    vi.spyOn(Date, "now").mockReturnValue(start + config.syncPollMs - 1);
+    const restarted = createWorkers(config, repository, secureStore, gateway);
+    await restarted.runOnce();
+    expect(dmSource(repository)).toMatchObject({
+      state: "error",
+      consecutiveFailures: 1,
+    });
+
+    vi.spyOn(Date, "now").mockReturnValue(start + config.syncPollMs);
+    await restarted.runOnce();
+    expect(dmSource(repository).state).toBe("healthy");
+  });
+});
+
 function createWorkers(
   config: ReturnType<typeof testConfig>,
   repository: DemoRepository,
@@ -376,6 +522,8 @@ function authenticateFixture(
       cursorEnvelope: dmCursorEnvelope,
       lastSuccessAt: now,
       lastErrorCode: null,
+      consecutiveFailures: 0,
+      nextAttemptAt: null,
     },
     now,
   );
@@ -394,6 +542,8 @@ function authenticateFixture(
       cursorEnvelope: comment.cursorPresent === false ? null : commentCursorEnvelope,
       lastSuccessAt: comment.baselineComplete || comment.cursorPresent === true ? now : null,
       lastErrorCode: comment.errorCode,
+      consecutiveFailures: 0,
+      nextAttemptAt: null,
     },
     now,
   );

@@ -38,6 +38,8 @@ export interface SourceRow {
   lastAttemptAt: number | null;
   lastSuccessAt: number | null;
   lastErrorCode: string | null;
+  consecutiveFailures: number;
+  nextAttemptAt: number | null;
   updatedAt: number;
 }
 
@@ -102,6 +104,8 @@ interface RawSource {
   last_attempt_at: number | null;
   last_success_at: number | null;
   last_error_code: string | null;
+  consecutive_failures: number;
+  next_attempt_at: number | null;
   updated_at: number;
 }
 
@@ -257,7 +261,8 @@ export class DemoRepository {
           UPDATE source_states
           SET state = 'pending', baseline_complete = 0, cursor_envelope = NULL,
               last_attempt_at = NULL, last_success_at = NULL,
-              last_error_code = NULL, updated_at = ?
+              last_error_code = NULL, consecutive_failures = 0,
+              next_attempt_at = NULL, updated_at = ?
           WHERE session_id = ?
         `)
         .run(now, id);
@@ -531,7 +536,8 @@ export class DemoRepository {
       .prepare(`
         UPDATE source_states
         SET state = 'pending', baseline_complete = 0,
-            last_error_code = NULL, updated_at = ?
+            last_error_code = NULL, consecutive_failures = 0,
+            next_attempt_at = NULL, updated_at = ?
         WHERE session_id = ? AND source = 'comment'
           AND state = 'schema_changed'
           AND last_error_code = 'schema_changed:post.cursor_target_missing'
@@ -579,6 +585,13 @@ export class DemoRepository {
       cursorEnvelope: string | null;
       lastSuccessAt: number | null;
       lastErrorCode: string | null;
+      /**
+       * Both pacing fields are required rather than optional. An omitted field would silently
+       * inherit whatever pacing the row already held, which is how a lane ends up quietly stuck
+       * on a stale backoff; every writer must say what the schedule is now.
+       */
+      consecutiveFailures: number;
+      nextAttemptAt: number | null;
     },
     now: number,
   ): boolean {
@@ -586,7 +599,8 @@ export class DemoRepository {
       .prepare(`
         UPDATE source_states
         SET state = ?, baseline_complete = ?, cursor_envelope = ?,
-            last_success_at = ?, last_error_code = ?, updated_at = ?
+            last_success_at = ?, last_error_code = ?,
+            consecutive_failures = ?, next_attempt_at = ?, updated_at = ?
         WHERE session_id = ? AND source = ?
           AND EXISTS (
             SELECT 1 FROM demo_sessions
@@ -599,6 +613,8 @@ export class DemoRepository {
         update.cursorEnvelope,
         update.lastSuccessAt,
         update.lastErrorCode,
+        update.consecutiveFailures,
+        update.nextAttemptAt,
         now,
         id,
         source,
@@ -1053,6 +1069,8 @@ function mapSource(row: RawSource): SourceRow {
     lastAttemptAt: row.last_attempt_at,
     lastSuccessAt: row.last_success_at,
     lastErrorCode: row.last_error_code,
+    consecutiveFailures: row.consecutive_failures ?? 0,
+    nextAttemptAt: row.next_attempt_at ?? null,
     updatedAt: row.updated_at,
   };
 }

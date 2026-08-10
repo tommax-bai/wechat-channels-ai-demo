@@ -456,6 +456,37 @@ export function requiredString(
   throw new WechatApiError(`schema_changed:${field}`, endpoint, REQUEST_DESCRIPTORS[endpoint].irreversible);
 }
 
+/**
+ * Reads a pagination cursor that the platform is expected to supply.
+ *
+ * A blank cursor is NOT a schema change. The short-lived direct-message login cookie is
+ * issued a moment after a scan completes, so a freshly authenticated account can legitimately
+ * read an empty value and succeed on the next attempt. Reporting that as `schema_changed`
+ * previously ended the lane permanently, so this path stays retryable and only names the
+ * observed top-level keys — never a value — so the next occurrence can be told apart from a
+ * genuine rename.
+ */
+export function requiredCursor(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+  endpoint: WechatEndpoint,
+  field: string,
+): string {
+  for (const key of keys) {
+    const value = record[key];
+    if ((typeof value === "string" || typeof value === "number") && String(value).trim()) {
+      return String(value).trim();
+    }
+  }
+  const present = Object.keys(record).sort().slice(0, 20).join(",");
+  throw new WechatApiError(
+    "dm_cursor_unavailable",
+    endpoint,
+    REQUEST_DESCRIPTORS[endpoint].irreversible,
+    `dm_cursor_unavailable ${field} endpoint=${endpoint} observedKeys=${present}`,
+  );
+}
+
 export function optionalString(record: Record<string, unknown>, keys: readonly string[]): string | null {
   for (const key of keys) {
     const value = record[key];

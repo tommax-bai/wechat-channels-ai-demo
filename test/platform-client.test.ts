@@ -1198,6 +1198,67 @@ describe("PrivateWechatGateway parsers", () => {
     expect(session.dmCursor).toBe("incremental-2");
   });
 
+  it("treats a not-yet-issued DM login cookie as retryable and recovers on the next attempt", async () => {
+    let loginCookieCalls = 0;
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/get-history-msg")) {
+          return response({
+            errCode: 0,
+            data: { msg: [], cookie: "history-cursor", isContinue: 0 },
+          });
+        }
+        if (url.pathname.endsWith("/get-login-cookie")) {
+          loginCookieCalls += 1;
+          // A freshly scanned account reaches this handoff before the platform has issued the
+          // short-lived incremental cookie, so the first attempt legitimately reads a blank value.
+          return response({
+            errCode: 0,
+            data: loginCookieCalls === 1
+              ? { baseResp: { errcode: 0 }, cookie: "" }
+              : { baseResp: { errcode: 0 }, cookie: "incremental-1" },
+          });
+        }
+        throw new Error(`unexpected ${url.pathname}`);
+      },
+    }));
+    const session = fakePlatformSession();
+
+    await expect(gateway.syncDirectMessages(session, null))
+      .rejects.toMatchObject({
+        code: "dm_cursor_unavailable",
+        endpoint: "dmLoginCookie",
+        ambiguous: false,
+        message: expect.stringContaining("observedKeys=baseResp,cookie"),
+      });
+
+    const recovered = await gateway.syncDirectMessages(session, null);
+    expect(recovered.hasMore).toBe(false);
+    expect(session.dmCursor).toBe("incremental-1");
+  });
+
+  it("reports a blank DM history continuation cursor as retryable, not as a schema change", async () => {
+    const blankCursorGateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 10_000,
+      fetchImpl: async () => response({
+        errCode: 0,
+        data: { msg: [], cookie: "   ", isContinue: 1 },
+      }),
+    }));
+
+    await expect(blankCursorGateway.syncDirectMessages(fakePlatformSession(), null))
+      .rejects.toMatchObject({
+        code: "dm_cursor_unavailable",
+        endpoint: "dmHistory",
+      });
+  });
+
   it("keeps the DM history pagination flag required", async () => {
     const gateway = new PrivateWechatGateway(new WechatTransport({
       baseUrl: "https://channels.weixin.qq.com",

@@ -58,12 +58,13 @@ const authLabels = {
   logged_out: "已退出",
 };
 
+// A failing source is always still being retried, so no label may read as a final verdict.
 const sourceLabels = {
   pending: "等待建立历史基线",
   healthy: "同步正常",
   auth_required: "登录已失效",
-  schema_changed: "接口结构发生变化",
-  error: "本次同步失败",
+  schema_changed: "接口返回异常，正在放慢重试",
+  error: "本次同步失败，正在自动重试",
 };
 
 const errorLabels = {
@@ -864,7 +865,7 @@ function renderSources(sources) {
     const target = source.source === "dm"
       ? { text: elements.dmHealth, dot: elements.dmDot }
       : { text: elements.commentHealth, dot: elements.commentDot };
-    target.text.textContent = source.baselineComplete ? label : `${label} · 自动回复未开启`;
+    target.text.textContent = source.baselineComplete ? label : `${label} · 基线未完成，暂不自动回复`;
     target.dot.className = `mini-dot ${source.state === "healthy" ? "good" : source.state === "pending" ? "" : "bad"}`;
   }
 }

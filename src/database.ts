@@ -57,6 +57,8 @@ export function openDatabase(path: string): SqliteDatabase {
       last_attempt_at INTEGER,
       last_success_at INTEGER,
       last_error_code TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (session_id, source)
     );
@@ -138,6 +140,15 @@ export function openDatabase(path: string): SqliteDatabase {
   const sourceColumns = db.pragma("table_info(source_states)") as Array<{ name: string }>;
   if (!sourceColumns.some((column) => column.name === "last_attempt_at")) {
     db.exec("ALTER TABLE source_states ADD COLUMN last_attempt_at INTEGER");
+  }
+  // Retry pacing must survive a restart: an in-memory backoff would let a process bounce turn a
+  // slow schema retry back into a full-cadence poll, and the incident that motivated these columns
+  // was only visible because source state is the durable record of what a lane is doing.
+  if (!sourceColumns.some((column) => column.name === "consecutive_failures")) {
+    db.exec("ALTER TABLE source_states ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!sourceColumns.some((column) => column.name === "next_attempt_at")) {
+    db.exec("ALTER TABLE source_states ADD COLUMN next_attempt_at INTEGER");
   }
   db.exec(`
     UPDATE source_states

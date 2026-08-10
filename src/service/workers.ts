@@ -17,6 +17,7 @@ import type {
   NormalizedInboundItem,
   PlatformSession,
   ReplyModelResult,
+  SourceState,
 } from "../types.js";
 import {
   WechatApiError,
@@ -32,6 +33,13 @@ import type { StoredCredential } from "./credentials.js";
 
 const COMMENT_SYNC_POLL_MS = 60_000;
 const COMMENT_SYNC_WAKE_MS = 5_000;
+/**
+ * A shape mismatch is unlikely to clear within one tick, so it starts slower than an ordinary
+ * failure. It still retries: whether a private platform interface really changed is only knowable
+ * by observing it again, so "stop forever" is a claim this service cannot honestly make.
+ */
+const SCHEMA_RETRY_FLOOR_MS = 300_000;
+const SYNC_RETRY_CAP_MS = 1_800_000;
 
 export class WorkerCoordinator {
   private timers: NodeJS.Timeout[] = [];
@@ -315,17 +323,27 @@ export class WorkerCoordinator {
       let source = this.repository.getSource(session.id, inboundSource);
       let forceCommentSync = false;
       if (!source || source.state === "auth_required") return;
-      if (source.state === "schema_changed") {
-        source = inboundSource === "comment"
-          ? this.repository.recoverCommentCursorTargetMissing(
-              session.id,
-              session.authGeneration,
-              Date.now(),
-            )
-          : null;
-        if (!source) return;
-        forceCommentSync = true;
+      if (source.state === "schema_changed" && inboundSource === "comment") {
+        // The superseded comment cursor error needs a baseline reset rather than a repeat of the
+        // failed attempt, so it runs before — and independently of — the retry gate below.
+        const recovered = this.repository.recoverCommentCursorTargetMissing(
+          session.id,
+          session.authGeneration,
+          Date.now(),
+        );
+        if (recovered) {
+          source = recovered;
+          forceCommentSync = true;
+        }
       }
+      // Every other failure, on either source, is retried on its persisted schedule. A direct-message
+      // schema failure used to end the lane here for the life of the credential, which turned a
+      // start-up race into a permanent outage that only a fresh scan could clear.
+      if (
+        !forceCommentSync
+        && source.nextAttemptAt !== null
+        && Date.now() < source.nextAttemptAt
+      ) return;
       const commentDue = source.lastAttemptAt === null
         || Date.now() - source.lastAttemptAt >= COMMENT_SYNC_POLL_MS;
       if (
@@ -358,6 +376,24 @@ export class WorkerCoordinator {
         Date.now(),
       );
     });
+  }
+
+  /**
+   * Bounded in rate, not in lifetime. Each consecutive failure doubles the wait from that lane's
+   * normal cadence — or from the slower schema floor — and stops growing at the cap, so a broken
+   * account costs one request per half hour instead of one every tick, and still never becomes a
+   * lane that has quietly stopped trying.
+   */
+  private retryDelayMs(
+    source: InboundSource,
+    state: SourceState,
+    consecutiveFailures: number,
+  ): number {
+    const floorMs = state === "schema_changed"
+      ? SCHEMA_RETRY_FLOOR_MS
+      : source === "comment" ? COMMENT_SYNC_POLL_MS : this.config.syncPollMs;
+    const doublings = Math.min(Math.max(consecutiveFailures, 1) - 1, 20);
+    return Math.min(SYNC_RETRY_CAP_MS, floorMs * 2 ** doublings);
   }
 
   private async syncSource(
@@ -407,9 +443,19 @@ export class WorkerCoordinator {
             cursorEnvelope,
             lastSuccessAt: Date.now(),
             lastErrorCode: null,
+            consecutiveFailures: 0,
+            nextAttemptAt: null,
           },
           Date.now(),
         );
+        if (source.consecutiveFailures > 0 && pageCount === 0) {
+          this.log.info(
+            `[demo] source recovered source=${source.source}`
+            + ` session=${maskSessionId(session.id)}`
+            + ` afterFailures=${source.consecutiveFailures}`
+            + ` previousCode=${source.lastErrorCode ?? "none"}`,
+          );
+        }
         pageCount += 1;
         if (!page.hasMore || pageCount >= 10) break;
       }
@@ -423,6 +469,9 @@ export class WorkerCoordinator {
         : code.startsWith("schema_changed")
           ? "schema_changed"
           : "error";
+      const consecutiveFailures = latestSource.consecutiveFailures + 1;
+      const retryDelayMs = this.retryDelayMs(source.source, state, consecutiveFailures);
+      const nextAttemptAt = state === "auth_required" ? null : Date.now() + retryDelayMs;
       this.repository.updateSource(
         session.id,
         session.authGeneration,
@@ -433,8 +482,17 @@ export class WorkerCoordinator {
           cursorEnvelope: latestSource.cursorEnvelope,
           lastSuccessAt: latestSource.lastSuccessAt,
           lastErrorCode: code,
+          consecutiveFailures,
+          nextAttemptAt,
         },
         Date.now(),
+      );
+      this.log.warn(
+        `[demo] source sync failed source=${source.source}`
+        + ` session=${maskSessionId(session.id)}`
+        + ` code=${code} state=${state}`
+        + ` consecutiveFailures=${consecutiveFailures}`
+        + ` retryInMs=${nextAttemptAt === null ? "n/a" : retryDelayMs}`,
       );
       if (state === "auth_required") {
         this.repository.setAuthStateIfGeneration(
@@ -475,6 +533,8 @@ export class WorkerCoordinator {
         cursorEnvelope,
         lastSuccessAt: latest.lastSuccessAt,
         lastErrorCode: latest.lastErrorCode,
+        consecutiveFailures: latest.consecutiveFailures,
+        nextAttemptAt: latest.nextAttemptAt,
       },
       Date.now(),
     )) {
@@ -914,6 +974,11 @@ export class WorkerCoordinator {
 
 function replyClientId(base: string, index: number): string {
   return index === 0 ? base : `${base}-${index + 1}`;
+}
+
+/** Enough to correlate one account across log lines, not enough to be a session selector. */
+function maskSessionId(id: string): string {
+  return `${id.slice(0, 6)}…`;
 }
 
 function safeErrorCode(error: unknown): string {

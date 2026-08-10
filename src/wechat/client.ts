@@ -13,6 +13,7 @@ import {
   newClientId,
   numberLike,
   optionalString,
+  requiredCursor,
   requiredString,
   DEFAULT_WECHAT_USER_AGENT,
   WechatApiError,
@@ -299,7 +300,7 @@ export class PrivateWechatGateway implements WechatGateway {
     if (state.phase === "history" && hasMore) {
       nextCursor = encodeDmCursor({
         phase: "history",
-        cursor: requiredString(
+        cursor: requiredCursor(
           result.data,
           ["cookie", "nextCursor"],
           "dmHistory",
@@ -308,7 +309,7 @@ export class PrivateWechatGateway implements WechatGateway {
       });
     } else if (state.phase === "history") {
       const loginCookie = await this.transport.request("dmLoginCookie", {}, context);
-      const incrementalCursor = requiredString(
+      const incrementalCursor = requiredCursor(
         loginCookie.data,
         ["cookie"],
         "dmLoginCookie",
@@ -317,7 +318,7 @@ export class PrivateWechatGateway implements WechatGateway {
       session.dmCursor = incrementalCursor;
       nextCursor = encodeDmCursor({ phase: "incremental", cursor: incrementalCursor });
     } else {
-      const incrementalCursor = requiredString(
+      const incrementalCursor = requiredCursor(
         result.data,
         ["cookie", "nextCursor"],
         "dmNewMessages",
