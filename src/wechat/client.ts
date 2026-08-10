@@ -48,8 +48,13 @@ export interface WechatSendResult {
 
 const DM_IMAGE_CHUNK_BYTES = 512 * 1024;
 
-interface DmCursorV1 {
-  v: 1;
+/**
+ * v2 drops the platform cursor that v2's predecessor carried in the incremental phase. Both phases
+ * now read the history endpoint, and the incremental phase reads only its first page, so there is
+ * no continuation token to keep. A retained v1 cursor is migrated on read.
+ */
+interface DmCursorV2 {
+  v: 2;
   phase: "history" | "incremental";
   cursor: string | null;
 }
@@ -163,7 +168,6 @@ export class PrivateWechatGateway implements WechatGateway {
       session: {
         transportProfile: "legacy_root",
         cookieJar: serializeJar(jar),
-        dmCursor: "",
         userAgent: DEFAULT_WECHAT_USER_AGENT,
         uin,
         finderUsername,
@@ -236,7 +240,12 @@ export class PrivateWechatGateway implements WechatGateway {
 
   async syncDirectMessages(session: PlatformSession, cursor: string | null): Promise<WechatSyncPage> {
     const state = parseDmCursor(cursor);
-    const endpoint = state.phase === "history" ? "dmHistory" : "dmNewMessages";
+    // Both phases read the history endpoint. The platform's notify channel answers a successful
+    // empty page while the mailbox holds unseen inbound messages — proven live on 2026-08-10, when
+    // the history endpoint returned a 21:27 inbound text that the notify channel reported for
+    // neither a stored nor a freshly issued cursor. A lane driven by it reports healthy while blind,
+    // which is the worst failure this service can have, so it is no longer read at all.
+    const endpoint = "dmHistory";
     const jar = this.transport.createJar(session.cookieJar);
     const context: RequestContext = {
       jar,
@@ -244,13 +253,11 @@ export class PrivateWechatGateway implements WechatGateway {
       finderUsername: session.finderUsername,
       userAgent: session.userAgent,
     };
-    const result = state.phase === "history"
-      ? await this.transport.request(
-          "dmHistory",
-          state.cursor ? { cookie: state.cursor } : {},
-          context,
-        )
-      : await this.transport.request("dmNewMessages", { cookie: state.cursor }, context);
+    const result = await this.transport.request(
+      "dmHistory",
+      state.cursor ? { cookie: state.cursor } : {},
+      context,
+    );
     const messages = arrayAt(result.data, ["msg", "messages", "messageList"], endpoint);
     const sessionIds = [...new Set(messages.map((raw) => {
       const item = asRecord(raw, endpoint, "message");
@@ -295,38 +302,17 @@ export class PrivateWechatGateway implements WechatGateway {
         rawShapeVersion: 1,
       }];
     });
-    const hasMore = directMessagePageHasMore(result.data, state.phase, endpoint);
-    let nextCursor: string;
-    if (state.phase === "history" && hasMore) {
-      nextCursor = encodeDmCursor({
-        phase: "history",
-        cursor: requiredCursor(
-          result.data,
-          ["cookie", "nextCursor"],
-          "dmHistory",
-          "data.cookie",
-        ),
-      });
-    } else if (state.phase === "history") {
-      const loginCookie = await this.transport.request("dmLoginCookie", {}, context);
-      const incrementalCursor = requiredCursor(
-        loginCookie.data,
-        ["cookie"],
-        "dmLoginCookie",
-        "data.cookie",
-      );
-      session.dmCursor = incrementalCursor;
-      nextCursor = encodeDmCursor({ phase: "incremental", cursor: incrementalCursor });
-    } else {
-      const incrementalCursor = requiredCursor(
-        result.data,
-        ["cookie", "nextCursor"],
-        "dmNewMessages",
-        "data.cookie",
-      );
-      session.dmCursor = incrementalCursor;
-      nextCursor = encodeDmCursor({ phase: "incremental", cursor: incrementalCursor });
-    }
+    // The platform's continuation flag still decides how far the baseline walks. After the baseline
+    // the lane reads this first page only: at the polling cadence it always covers what arrived
+    // since the last read, and dedup by immutable message ID keeps the repeated overlap harmless.
+    const hasMore = state.phase === "history"
+      && directMessagePageHasMore(result.data, endpoint);
+    const nextCursor = hasMore
+      ? encodeDmCursor({
+          phase: "history",
+          cursor: requiredCursor(result.data, ["cookie", "nextCursor"], "dmHistory", "data.cookie"),
+        })
+      : encodeDmCursor({ phase: "incremental", cursor: null });
     session.cookieJar = serializeJar(jar);
     return {
       items,
@@ -580,26 +566,27 @@ function arrayAt(
   throw new WechatApiError(`schema_changed:${keys[0] ?? "array"}`, endpoint, false);
 }
 
-function parseDmCursor(raw: string | null): DmCursorV1 {
-  if (raw === null) return { v: 1, phase: "history", cursor: null };
+function parseDmCursor(raw: string | null): DmCursorV2 {
+  if (raw === null) return { v: 2, phase: "history", cursor: null };
   try {
-    const value = JSON.parse(raw) as Partial<DmCursorV1>;
-    if (
-      value.v !== 1
-      || (value.phase !== "history" && value.phase !== "incremental")
-      || (value.cursor !== null && typeof value.cursor !== "string")
-      || (value.phase === "incremental" && !value.cursor)
-    ) {
+    const value = JSON.parse(raw) as { v?: unknown; phase?: unknown; cursor?: unknown };
+    if (value.v !== 1 && value.v !== 2) throw new Error("invalid");
+    if (value.phase !== "history" && value.phase !== "incremental") throw new Error("invalid");
+    if (value.cursor !== null && value.cursor !== undefined && typeof value.cursor !== "string") {
       throw new Error("invalid");
     }
-    return value as DmCursorV1;
+    // A retained v1 incremental cursor addressed the abandoned notify channel. Its phase is what
+    // matters — it says the baseline is behind us — while its token no longer means anything, so it
+    // is dropped rather than replayed against a different endpoint.
+    if (value.phase === "incremental") return { v: 2, phase: "incremental", cursor: null };
+    return { v: 2, phase: "history", cursor: value.cursor ?? null };
   } catch {
     throw new WechatApiError("schema_changed:dm.cursor", "dmHistory", false);
   }
 }
 
-function encodeDmCursor(value: Omit<DmCursorV1, "v">): string {
-  return JSON.stringify({ v: 1, ...value } satisfies DmCursorV1);
+function encodeDmCursor(value: Omit<DmCursorV2, "v">): string {
+  return JSON.stringify({ v: 2, ...value } satisfies DmCursorV2);
 }
 
 function parseCommentObservationMarker(raw: string | null): CommentObservationMarkerV3 {
@@ -679,10 +666,10 @@ export function encodeCommentObservationMarker(observedPosts: boolean): string {
   return JSON.stringify({ v: 3, observedPosts } satisfies CommentObservationMarkerV3);
 }
 
+/** Only the baseline walks pages, so the history endpoint must always state whether more remain. */
 function directMessagePageHasMore(
   data: Record<string, unknown>,
-  phase: DmCursorV1["phase"],
-  endpoint: "dmHistory" | "dmNewMessages",
+  endpoint: "dmHistory",
 ): boolean {
   let parsed: boolean | null = null;
   let present = false;
@@ -702,7 +689,6 @@ function directMessagePageHasMore(
     parsed = current;
   }
   if (present && parsed !== null) return parsed;
-  if (!present && phase === "incremental") return false;
   throw new WechatApiError("schema_changed:data.isContinue", endpoint, false);
 }
 

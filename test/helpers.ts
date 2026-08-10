@@ -309,7 +309,6 @@ export function fakePlatformSession(finderUsername = "finder-self"): PlatformSes
   return {
     transportProfile: "micro_v1",
     cookieJar: serializeJar(new CookieJar()),
-    dmCursor: "cursor-1",
     userAgent: "test-agent",
     uin: "10001",
     finderUsername,
@@ -340,6 +339,7 @@ export function fakeDm(
   externalId: string,
   ownIdentity: string,
   text: string,
+  occurredAt: number = Date.now(),
 ): NormalizedInboundItem {
   return {
     source: "dm",
@@ -347,7 +347,7 @@ export function fakeDm(
     authorId: `peer-${externalId}`,
     authorName: "测试访客",
     text,
-    occurredAt: Date.now(),
+    occurredAt,
     target: {
       kind: "dm",
       sessionId: `session-${externalId}`,

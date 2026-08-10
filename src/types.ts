@@ -48,7 +48,6 @@ export interface WechatRequestContext {
 export interface PlatformSession {
   transportProfile: "legacy_root" | "micro_v1";
   cookieJar: SerializedCookieJar;
-  dmCursor: string;
   userAgent: string;
   uin: string;
   finderUsername: string;

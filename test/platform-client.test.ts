@@ -1103,7 +1103,7 @@ describe("PrivateWechatGateway parsers", () => {
     });
   });
 
-  it("drains DM history and accepts an incremental page without a pagination flag", async () => {
+  it("drains DM history for the baseline and then re-reads only its first page", async () => {
     const calls: Array<{ path: string; cookie: string | null }> = [];
     let historyPage = 0;
     const gateway = new PrivateWechatGateway(new WechatTransport({
@@ -1119,33 +1119,19 @@ describe("PrivateWechatGateway parsers", () => {
           return response({
             errCode: 0,
             data: {
-              msg: [],
+              msg: historyPage >= 3
+                ? [{
+                    msgType: 1,
+                    fromUsername: "peer-1",
+                    toUsername: "finder-self",
+                    textMsg: { content: "一条新的测试私信" },
+                    svrMsgId: "new-message-1",
+                    sessionId: "conversation-1",
+                    createTime: "1710000000",
+                  }]
+                : [],
               cookie: `history-${historyPage + 1}`,
               isContinue: historyPage === 1 ? 1 : 0,
-            },
-          });
-        }
-        if (url.pathname.endsWith("/get-login-cookie")) {
-          return response({
-            errCode: 0,
-            data: { baseResp: { errcode: 0 }, cookie: "incremental-1" },
-          });
-        }
-        if (url.pathname.endsWith("/get-new-msg")) {
-          return response({
-            errCode: 0,
-            data: {
-              baseResp: { errcode: 0 },
-              msg: [{
-                msgType: 1,
-                fromUsername: "peer-1",
-                toUsername: "finder-self",
-                textMsg: { content: "一条新的测试私信" },
-                svrMsgId: "new-message-1",
-                sessionId: "conversation-1",
-                createTime: "1710000000",
-              }],
-              cookie: "incremental-2",
             },
           });
         }
@@ -1173,15 +1159,19 @@ describe("PrivateWechatGateway parsers", () => {
     expect(first.hasMore).toBe(true);
     expect(second.hasMore).toBe(false);
     expect(third.hasMore).toBe(false);
+    // The baseline follows the platform's continuation cookie; afterwards every read is the first
+    // page again, and the abandoned notify and login-cookie endpoints are never contacted.
     expect(calls.map((call) => call.path)).toEqual([
       "/cgi-bin/mmfinderassistant-bin/private-msg/get-history-msg",
       "/cgi-bin/mmfinderassistant-bin/private-msg/get-history-msg",
-      "/cgi-bin/mmfinderassistant-bin/private-msg/get-login-cookie",
-      "/cgi-bin/mmfinderassistant-bin/private-msg/get-new-msg",
+      "/cgi-bin/mmfinderassistant-bin/private-msg/get-history-msg",
       "/cgi-bin/mmfinderassistant-bin/private-msg/get-session-info",
     ]);
     expect(calls[1]?.cookie).toBe("history-2");
-    expect(calls[3]?.cookie).toBe("incremental-1");
+    // No continuation token on the incremental read: the first page is exactly what is wanted.
+    expect(calls[2]?.cookie).toBeNull();
+    expect(JSON.parse(String(second.cursor))).toEqual({ v: 2, phase: "incremental", cursor: null });
+    expect(JSON.parse(String(third.cursor))).toEqual({ v: 2, phase: "incremental", cursor: null });
     expect(third.items).toEqual([expect.objectContaining({
       source: "dm",
       externalId: "new-message-1",
@@ -1195,50 +1185,30 @@ describe("PrivateWechatGateway parsers", () => {
         toUsername: "peer-1",
       },
     })]);
-    expect(session.dmCursor).toBe("incremental-2");
   });
 
-  it("treats a not-yet-issued DM login cookie as retryable and recovers on the next attempt", async () => {
-    let loginCookieCalls = 0;
+  it("keeps reading history for a retained cursor from the abandoned notify channel", async () => {
+    const paths: string[] = [];
     const gateway = new PrivateWechatGateway(new WechatTransport({
       baseUrl: "https://channels.weixin.qq.com",
       timeoutMs: 1_000,
       maxResponseBytes: 10_000,
       fetchImpl: async (input) => {
         const url = new URL(String(input));
-        if (url.pathname.endsWith("/get-history-msg")) {
-          return response({
-            errCode: 0,
-            data: { msg: [], cookie: "history-cursor", isContinue: 0 },
-          });
-        }
-        if (url.pathname.endsWith("/get-login-cookie")) {
-          loginCookieCalls += 1;
-          // A freshly scanned account reaches this handoff before the platform has issued the
-          // short-lived incremental cookie, so the first attempt legitimately reads a blank value.
-          return response({
-            errCode: 0,
-            data: loginCookieCalls === 1
-              ? { baseResp: { errcode: 0 }, cookie: "" }
-              : { baseResp: { errcode: 0 }, cookie: "incremental-1" },
-          });
-        }
-        throw new Error(`unexpected ${url.pathname}`);
+        paths.push(url.pathname);
+        return response({
+          errCode: 0,
+          data: { msg: [], cookie: "history-next", isContinue: 0 },
+        });
       },
     }));
-    const session = fakePlatformSession();
 
-    await expect(gateway.syncDirectMessages(session, null))
-      .rejects.toMatchObject({
-        code: "dm_cursor_unavailable",
-        endpoint: "dmLoginCookie",
-        ambiguous: false,
-        message: expect.stringContaining("observedKeys=baseResp,cookie"),
-      });
+    const legacyCursor = JSON.stringify({ v: 1, phase: "incremental", cursor: "notify-token" });
+    const page = await gateway.syncDirectMessages(fakePlatformSession(), legacyCursor);
 
-    const recovered = await gateway.syncDirectMessages(session, null);
-    expect(recovered.hasMore).toBe(false);
-    expect(session.dmCursor).toBe("incremental-1");
+    expect(paths).toEqual(["/cgi-bin/mmfinderassistant-bin/private-msg/get-history-msg"]);
+    expect(page.hasMore).toBe(false);
+    expect(JSON.parse(String(page.cursor))).toEqual({ v: 2, phase: "incremental", cursor: null });
   });
 
   it("reports a blank DM history continuation cursor as retryable, not as a schema change", async () => {
@@ -1278,46 +1248,21 @@ describe("PrivateWechatGateway parsers", () => {
       });
   });
 
-  it("rejects a malformed explicit incremental pagination flag", async () => {
+  it("rejects a malformed history pagination flag", async () => {
     const gateway = new PrivateWechatGateway(new WechatTransport({
       baseUrl: "https://channels.weixin.qq.com",
       timeoutMs: 1_000,
       maxResponseBytes: 10_000,
-      fetchImpl: async (input) => {
-        const path = new URL(String(input)).pathname;
-        if (path.endsWith("/get-history-msg")) {
-          return response({
-            errCode: 0,
-            data: { msg: [], cookie: "history-end", isContinue: 0 },
-          });
-        }
-        if (path.endsWith("/get-login-cookie")) {
-          return response({
-            errCode: 0,
-            data: { baseResp: { errcode: 0 }, cookie: "incremental-1" },
-          });
-        }
-        if (path.endsWith("/get-new-msg")) {
-          return response({
-            errCode: 0,
-            data: {
-              baseResp: { errcode: 0 },
-              msg: [],
-              cookie: "incremental-2",
-              isContinue: 2,
-            },
-          });
-        }
-        throw new Error(`unexpected ${path}`);
-      },
+      fetchImpl: async () => response({
+        errCode: 0,
+        data: { msg: [], cookie: "history-end", isContinue: 2 },
+      }),
     }));
-    const session = fakePlatformSession();
-    const baseline = await gateway.syncDirectMessages(session, null);
 
-    await expect(gateway.syncDirectMessages(session, baseline.cursor))
+    await expect(gateway.syncDirectMessages(fakePlatformSession(), null))
       .rejects.toMatchObject({
         code: "schema_changed:data.isContinue",
-        endpoint: "dmNewMessages",
+        endpoint: "dmHistory",
         ambiguous: false,
       });
   });

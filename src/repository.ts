@@ -625,6 +625,20 @@ export class DemoRepository {
     return result.changes > 0;
   }
 
+  /**
+   * Newest platform timestamp already stored for a source. It is the reply watermark once a lane
+   * reads a window instead of a strict delta: anything at or before what we already hold is content
+   * we have seen, not something that just arrived.
+   */
+  latestInboundOccurredAt(id: string, source: InboundSource): number | null {
+    const row = this.db
+      .prepare(
+        "SELECT MAX(occurred_at) AS value FROM inbound_items WHERE session_id = ? AND source = ?",
+      )
+      .get(id, source) as { value: number | null } | undefined;
+    return row?.value ?? null;
+  }
+
   insertInbound(input: {
     id: string;
     sessionId: string;

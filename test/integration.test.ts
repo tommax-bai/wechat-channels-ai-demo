@@ -106,6 +106,51 @@ describe("multi-user demo flow", () => {
     expect(receipt?.value.length).toBeGreaterThan(20);
   });
 
+  it("stores an already-seen-era direct message without replying to it", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    const baseline = requireSessionId(database);
+    const watermark = repository.latestInboundOccurredAt(baseline, "dm");
+    if (watermark === null) throw new Error("missing baseline direct message");
+
+    // Reading a window rather than a strict delta surfaces items the baseline already covered era-
+    // wise. Anything older than the newest stored item is content to display, never news to answer.
+    gateway.newItems.set("finder-1", [
+      fakeDm("older-than-watermark", "finder-1", "基线之前的旧私信", watermark - 60_000),
+      fakeDm("newer-than-watermark", "finder-1", "刚到的新私信", watermark + 60_000),
+    ]);
+    await workers.runOnce();
+
+    const timeline = (await snapshot(server, visitor.cookie)).timeline;
+    expect(timeline.find((item) => item.text === "基线之前的旧私信"))
+      .toMatchObject({ historical: true, replyState: null });
+    expect(timeline.find((item) => item.text === "刚到的新私信"))
+      .toMatchObject({ historical: false, replyState: "confirmed" });
+    expect(gateway.sends).toHaveLength(1);
+  });
+
+  it("stores a long-delayed direct message without replying to it", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    // A lane that was blind for hours must not wake up and answer the whole backlog at once.
+    gateway.newItems.set("finder-1", [
+      fakeDm("stale-backlog", "finder-1", "六小时前发来的私信", Date.now() - 7 * 3_600_000),
+    ]);
+    await workers.runOnce();
+
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "六小时前发来的私信"))
+      .toMatchObject({ historical: true, replyState: null });
+    expect(gateway.sends).toHaveLength(0);
+    expect(model.calls).toHaveLength(0);
+  });
+
   it("allows only one active demo session for the same platform account", async () => {
     const server = requireApp(app);
     gateway.accountName = "finder-shared";
