@@ -51,9 +51,12 @@ paths:
       tags:
         - Accounts
       operationId: createPartnerAccount
-      summary: Create a disabled account container
+      summary: Create an enabled Funnel account container
       description: |
-        Creates a retained account container with automatic replies disabled.
+        Creates a retained account container with automatic replies enabled,
+        provider `funnel`, and default job ID
+        `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`. Automation becomes effective
+        only after login and source baseline initialization complete.
         The request has no body. Repeating the request creates another account.
       responses:
         '201':
@@ -68,7 +71,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '503':
-          description: Partner API is unavailable or the retained-account limit was reached
+          description: Partner API or Funnel is unavailable, or the retained-account limit was reached
           headers:
             Cache-Control:
               $ref: '#/components/headers/CacheControlNoStore'
@@ -83,6 +86,9 @@ paths:
                 accountLimit:
                   value:
                     error: active_session_limit_reached
+                funnelUnavailable:
+                  value:
+                    error: funnel_provider_unavailable
     get:
       tags:
         - Accounts
@@ -813,9 +819,9 @@ components:
           reloginRequired: false
           credentialExpiresAt: null
         replySettings:
-          provider: chat-llm
+          provider: funnel
           providerConfigured: true
-          jobNumber: null
+          jobNumber: 4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb
         wechatQr:
           configured: true
           mimeType: image/png

@@ -80,3 +80,26 @@ describe("Partner business WeChat QR documentation", () => {
     expect(markdown).toContain("不得超过 512 KiB");
   });
 });
+
+describe("Partner account creation defaults documentation", () => {
+  it("documents enabled Funnel replies and the fixed default job", () => {
+    const markdownSection = section(
+      markdown,
+      "### POST /accounts",
+      "### GET /accounts",
+    );
+    const openapiSection = section(
+      openapi,
+      "  /accounts:",
+      "    get:",
+    );
+    const defaultJob = "4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb";
+
+    expect(markdownSection).toContain("默认开启自动回复");
+    expect(markdownSection).toContain("招聘接口");
+    expect(markdownSection).toContain(defaultJob);
+    expect(openapiSection).toContain("Create an enabled Funnel account container");
+    expect(openapiSection).toContain(defaultJob);
+    expect(openapiSection).toContain("funnel_provider_unavailable");
+  });
+});

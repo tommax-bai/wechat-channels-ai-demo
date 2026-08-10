@@ -16,6 +16,7 @@ import {
   type InboundRow,
   type SessionRow,
 } from "../repository.js";
+import { DEFAULT_FUNNEL_JOB_NUMBER } from "../reply-defaults.js";
 import type {
   AccountQrAsset,
   AccountWechatQrMetadata,
@@ -76,6 +77,7 @@ export class SessionService {
   }
 
   createPartnerSession(now = Date.now()): SessionRow {
+    if (!this.config.funnelBaseUrl) throw new Error("funnel_provider_unavailable");
     if (this.repository.countRetainedSessions(now) >= this.config.maxActiveSessions) {
       throw new SessionLimitError();
     }
@@ -84,7 +86,9 @@ export class SessionService {
       id,
       now,
       now + this.config.pendingSessionTtlMs,
-      false,
+      true,
+      "funnel",
+      DEFAULT_FUNNEL_JOB_NUMBER,
     );
   }
 

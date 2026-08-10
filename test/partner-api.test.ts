@@ -6,6 +6,7 @@ import type { AppConfig } from "../src/config.js";
 import { SecureStore } from "../src/crypto.js";
 import { openDatabase, type SqliteDatabase } from "../src/database.js";
 import { DemoRepository } from "../src/repository.js";
+import { DEFAULT_FUNNEL_JOB_NUMBER } from "../src/reply-defaults.js";
 import { buildServer } from "../src/server.js";
 import { SessionService } from "../src/service/session-service.js";
 import { WorkerCoordinator } from "../src/service/workers.js";
@@ -216,16 +217,16 @@ describe("Partner API", () => {
       },
       hosting: {
         state: "not_ready",
-        automationEnabled: false,
+        automationEnabled: true,
         automationEffective: false,
         loginExpired: false,
         reloginRequired: false,
         credentialExpiresAt: null,
       },
       replySettings: {
-        provider: "chat-llm",
+        provider: "funnel",
         providerConfigured: true,
-        jobNumber: null,
+        jobNumber: DEFAULT_FUNNEL_JOB_NUMBER,
       },
       wechatQr: {
         configured: false,
@@ -277,6 +278,31 @@ describe("Partner API", () => {
     });
     expect(afterDelete.statusCode).toBe(404);
     expect(afterDelete.json()).toEqual({ error: "partner_account_not_found" });
+  });
+
+  it("rejects Partner account creation before persistence when Funnel is unavailable", async () => {
+    const fixture = await createFixture(true, false);
+    const created = await fixture.app.inject({
+      method: "POST",
+      url: "/partner/v1/accounts",
+      headers: partnerHeaders(),
+    });
+
+    expect(created.statusCode).toBe(503);
+    expect(created.json()).toEqual({ error: "funnel_provider_unavailable" });
+    expect(fixture.repository.listRetainedSessions(Date.now())).toEqual([]);
+  });
+
+  it("keeps ordinary browser-created sessions on the existing CHAT defaults", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.app.inject({ method: "GET", url: "/api/session" });
+
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({
+      automationEnabled: true,
+      replyProvider: "chat-llm",
+      funnelJobNumber: null,
+    });
   });
 
   it("stores separate encrypted account QR assets and never exposes bytes to Partner clients", async () => {
@@ -717,8 +743,8 @@ describe("Partner API", () => {
 
     const unchanged = await getAccount(fixture.app, account.accountId);
     expect(unchanged.replySettings).toMatchObject({
-      provider: "chat-llm",
-      jobNumber: null,
+      provider: "funnel",
+      jobNumber: DEFAULT_FUNNEL_JOB_NUMBER,
     });
 
     const selected = await fixture.app.inject({
@@ -1034,8 +1060,11 @@ class ScriptedWechatGateway extends FakeWechatGateway {
   }
 }
 
-async function createFixture(partnerApiEnabled = true): Promise<TestFixture> {
-  const config = configuredTestConfig(partnerApiEnabled);
+async function createFixture(
+  partnerApiEnabled = true,
+  funnelEnabled = true,
+): Promise<TestFixture> {
+  const config = configuredTestConfig(partnerApiEnabled, funnelEnabled);
   const database = openDatabase(":memory:");
   const repository = new DemoRepository(database);
   const secureStore = new SecureStore(config.encryptionKey);
@@ -1057,9 +1086,12 @@ async function createFixture(partnerApiEnabled = true): Promise<TestFixture> {
   return fixture;
 }
 
-function configuredTestConfig(partnerApiEnabled: boolean): AppConfig {
+function configuredTestConfig(
+  partnerApiEnabled: boolean,
+  funnelEnabled: boolean,
+): AppConfig {
   return testConfig({
-    funnelBaseUrl: "http://funnel.example.test",
+    ...(funnelEnabled ? { funnelBaseUrl: "http://funnel.example.test" } : {}),
     ...(partnerApiEnabled ? { partnerApiKey: PARTNER_KEY } : {}),
   });
 }

@@ -51,7 +51,7 @@ export ACCOUNT_ID='<POST /accounts 返回的 accountId>'
 
 ## 2. 推荐流程
 
-1. `POST /accounts` 创建账号容器并保存 `accountId`。
+1. `POST /accounts` 创建账号容器并保存 `accountId`；容器默认开启自动回复，使用招聘接口和岗位 ID `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`。
 2. `POST /accounts/{accountId}/login/qr` 获取登录二维码。
 3. 每 2 秒调用 `GET /accounts/{accountId}/login/status`。
 4. 只有 `login.succeeded=true` 才认为登录完成。
@@ -84,9 +84,21 @@ curl --fail-with-body -X POST \
     "qrDataUrl": null,
     "qrExpiresAt": null,
     "errorCode": null
+  },
+  "hosting": {
+    "state": "not_ready",
+    "automationEnabled": true,
+    "automationEffective": false
+  },
+  "replySettings": {
+    "provider": "funnel",
+    "providerConfigured": true,
+    "jobNumber": "4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb"
   }
 }
 ```
+
+自动回复开关在创建时已经保存为开启，但只有登录成功、评论和私信基线完成且招聘接口可用后才会实际生效。服务端没有配置招聘接口时，本接口返回 HTTP 503 和 `funnel_provider_unavailable`，且不会创建容器。
 
 `POST /accounts` 没有幂等键。若调用方因网络超时无法确认结果，应先通过 `GET /accounts` 对账，不要盲目重复创建。
 

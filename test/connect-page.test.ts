@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SecureStore } from "../src/crypto.js";
-import { DEFAULT_CONNECT_FUNNEL_JOB_NUMBER } from "../src/connect-defaults.js";
+import { DEFAULT_FUNNEL_JOB_NUMBER } from "../src/reply-defaults.js";
 import { openDatabase, type SqliteDatabase } from "../src/database.js";
 import { DemoRepository } from "../src/repository.js";
 import { buildServer } from "../src/server.js";
@@ -64,7 +64,7 @@ describe("cookie-bound connect page", () => {
       authState: "qr_pending",
       accountDisplayName: null,
       replyProvider: "funnel",
-      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+      funnelJobNumber: DEFAULT_FUNNEL_JOB_NUMBER,
       wechatQr: null,
     });
     expect(first.json<ConnectSnapshot>().qrDataUrl).toMatch(/^data:image\/png;base64,/);
@@ -96,7 +96,7 @@ describe("cookie-bound connect page", () => {
       method: "POST",
       url: "/api/connect/reply-settings",
       headers: { cookie: pending, origin: "http://localhost:4310" },
-      payload: { jobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER },
+      payload: { jobNumber: DEFAULT_FUNNEL_JOB_NUMBER },
     });
     expect(rejectedReplySettings.statusCode).toBe(401);
     expect(rejectedReplySettings.json()).toEqual({ error: "connect_account_required" });
@@ -120,7 +120,7 @@ describe("cookie-bound connect page", () => {
       authState: "active",
       accountDisplayName: "账号 finder-cookie-bound",
       replyProvider: "funnel",
-      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+      funnelJobNumber: DEFAULT_FUNNEL_JOB_NUMBER,
     });
     const affinity = responseCookie(bound.headers["set-cookie"], AFFINITY_COOKIE);
     expect(affinity).not.toContain("finder-cookie-bound");
@@ -239,12 +239,12 @@ describe("cookie-bound connect page", () => {
       method: "POST",
       url: "/api/connect/reply-settings",
       headers: { cookie: affinity, origin: "http://localhost:4310" },
-      payload: { jobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER },
+      payload: { jobNumber: DEFAULT_FUNNEL_JOB_NUMBER },
     });
     expect(saved.statusCode).toBe(200);
     expect(saved.json<ConnectSnapshot>()).toMatchObject({
       replyProvider: "funnel",
-      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+      funnelJobNumber: DEFAULT_FUNNEL_JOB_NUMBER,
     });
 
     const shared = await server.inject({ method: "GET", url: "/api/sessions" });
@@ -260,7 +260,7 @@ describe("cookie-bound connect page", () => {
     expect(sessions[0]).toMatchObject({
       accountDisplayName: "账号 finder-existing-chat",
       replyProvider: "funnel",
-      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+      funnelJobNumber: DEFAULT_FUNNEL_JOB_NUMBER,
     });
     const selected = await server.inject({
       method: "POST",
@@ -271,7 +271,7 @@ describe("cookie-bound connect page", () => {
     expect(selected.statusCode).toBe(200);
     expect(selected.json()).toMatchObject({
       replyProvider: "funnel",
-      funnelJobNumber: DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+      funnelJobNumber: DEFAULT_FUNNEL_JOB_NUMBER,
     });
   });
 

@@ -61,9 +61,9 @@ export PARTNER_API_KEY='<通过安全渠道获取的 Partner API Key>'
 3. 调用 `POST /accounts/{accountId}/login/qr` 获取二维码。
 4. 每 2 秒调用 `GET /accounts/{accountId}/login/status`，分别判断是否扫码和是否登录完成。
 5. 登录完成后读取 `GET /accounts/{accountId}/hosting`。只有 `loginExpired: true` 才表示平台明确要求重新登录。
-6. 调用 `PUT /accounts/{accountId}/reply-settings` 选择回复方式；选择 `funnel` 时同时提交已知 `jobNumber`。
+6. 新账号已经默认使用招聘接口和岗位 ID `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`；如需覆盖默认值，再调用 `PUT /accounts/{accountId}/reply-settings`。
 7. 使用招聘接口且需要发送业务微信二维码时，调用 `PUT /accounts/{accountId}/wechat-qr` 配置当前账号的图片。
-8. 调用 `PUT /accounts/{accountId}/hosting` 开启或暂停自动回复。
+8. 新账号已经默认开启自动回复；如需暂停或恢复，再调用 `PUT /accounts/{accountId}/hosting`。
 9. 分别分页读取 `/comments` 和 `/direct-messages`，按内容 `id` 更新已有记录。
 
 ## 4. 公共数据结构
@@ -95,9 +95,9 @@ export PARTNER_API_KEY='<通过安全渠道获取的 Partner API Key>'
     "credentialExpiresAt": null
   },
   "replySettings": {
-    "provider": "chat-llm",
+    "provider": "funnel",
     "providerConfigured": true,
-    "jobNumber": null
+    "jobNumber": "4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb"
   },
   "wechatQr": {
     "configured": true,
@@ -212,7 +212,9 @@ curl --fail-with-body \
 
 ### POST /accounts
 
-创建一个待扫码账号容器。新账号的自动回复默认关闭。请求体为空，成功返回 HTTP 201 和完整 `AccountProjection`。
+创建一个待扫码账号容器。新账号默认开启自动回复，使用招聘接口，并保存岗位 ID `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`。请求体为空，成功返回 HTTP 201 和完整 `AccountProjection`；登录和基线初始化完成前，`automationEffective` 仍为 `false`。
+
+如果服务端没有配置招聘接口，本请求返回 HTTP 503 和 `funnel_provider_unavailable`，且不会创建账号容器。
 
 ```bash
 curl --fail-with-body -X POST \

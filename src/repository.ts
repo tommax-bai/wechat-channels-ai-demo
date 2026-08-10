@@ -154,14 +154,30 @@ export class DemoRepository {
     return row.count;
   }
 
-  createSession(id: string, now: number, expiresAt: number, automationEnabled: boolean): SessionRow {
+  createSession(
+    id: string,
+    now: number,
+    expiresAt: number,
+    automationEnabled: boolean,
+    replyProvider: ReplyProvider = "chat-llm",
+    funnelJobNumber: string | null = null,
+  ): SessionRow {
     this.db
       .prepare(`
         INSERT INTO demo_sessions (
-          id, created_at, updated_at, expires_at, auth_state, automation_enabled
-        ) VALUES (?, ?, ?, ?, 'new', ?)
+          id, created_at, updated_at, expires_at, auth_state, automation_enabled,
+          reply_provider, funnel_job_number
+        ) VALUES (?, ?, ?, ?, 'new', ?, ?, ?)
       `)
-      .run(id, now, now, expiresAt, automationEnabled ? 1 : 0);
+      .run(
+        id,
+        now,
+        now,
+        expiresAt,
+        automationEnabled ? 1 : 0,
+        replyProvider,
+        funnelJobNumber,
+      );
     for (const source of ["dm", "comment"] as const) {
       this.db
         .prepare(`

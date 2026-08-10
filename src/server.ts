@@ -9,8 +9,8 @@ import Fastify, {
 } from "fastify";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
-import { DEFAULT_CONNECT_FUNNEL_JOB_NUMBER } from "./connect-defaults.js";
 import { registerPartnerApi } from "./partner-api.js";
+import { DEFAULT_FUNNEL_JOB_NUMBER } from "./reply-defaults.js";
 import {
   isSessionRetained,
   type DemoRepository,
@@ -399,7 +399,7 @@ async function createPendingConnectContext(
   const providerConfigured = deps.sessions.setReplyProvider(
     browser.row,
     "funnel",
-    DEFAULT_CONNECT_FUNNEL_JOB_NUMBER,
+    DEFAULT_FUNNEL_JOB_NUMBER,
   );
   const configured = deps.sessions.setAutomation(providerConfigured, true);
   await deps.sessions.startLogin(configured);
