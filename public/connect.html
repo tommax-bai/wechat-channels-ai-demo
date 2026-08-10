@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>视频号连接</title>
+    <link rel="stylesheet" href="/connect.css" />
+  </head>
+  <body>
+    <main class="connect-shell">
+      <section class="panel login-panel" aria-labelledby="connectTitle">
+        <header class="panel-heading">
+          <div>
+            <p class="kicker">01 · CONNECT</p>
+            <h1 id="connectTitle">扫码登录</h1>
+          </div>
+          <span id="authBadge" class="status-badge">正在准备</span>
+        </header>
+
+        <div class="login-grid">
+          <div id="loginStage" class="login-stage" aria-live="polite">
+            <div class="qr-placeholder">
+              <span class="spinner" aria-hidden="true"></span>
+              <strong>正在生成二维码</strong>
+            </div>
+          </div>
+
+          <div class="account-state">
+            <div class="verified-row">
+              <span id="verifiedIcon" class="verified-icon" aria-hidden="true">·</span>
+              <div>
+                <strong id="verifiedLabel">等待视频号扫码</strong>
+                <small>视频号</small>
+              </div>
+            </div>
+            <p id="accountName" class="account-name">尚未登录</p>
+            <p id="authHint" class="state-hint">请使用微信扫描左侧二维码并在手机上确认。</p>
+            <button id="refreshLoginButton" class="button primary" type="button">刷新二维码</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel wechat-panel" aria-labelledby="wechatQrTitle">
+        <header class="panel-heading compact-heading">
+          <div>
+            <p class="kicker">当前账号</p>
+            <h2 id="wechatQrTitle">业务微信二维码</h2>
+          </div>
+          <span id="wechatQrStatus" class="status-badge muted">等待登录</span>
+        </header>
+
+        <div class="wechat-grid">
+          <div class="wechat-preview" aria-label="当前账号业务微信二维码预览">
+            <img id="wechatQrImage" alt="当前账号业务微信二维码" hidden />
+            <div id="wechatQrEmpty" class="wechat-empty">
+              <span>码</span>
+              <strong>尚未配置</strong>
+            </div>
+          </div>
+
+          <div class="wechat-settings">
+            <p>招聘接口在私信中要求发送二维码时，将使用当前视频号账号配置的图片。</p>
+            <small id="wechatQrMeta">登录视频号后可配置</small>
+            <input id="wechatQrFile" type="file" accept="image/png,image/jpeg" hidden />
+            <div class="wechat-actions">
+              <button id="wechatQrChoose" class="button secondary" type="button" disabled>上传二维码</button>
+              <button id="wechatQrDelete" class="button ghost" type="button" disabled>删除二维码</button>
+            </div>
+            <p id="wechatQrHint" class="action-hint" role="status">等待当前账号登录</p>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/connect.js" defer></script>
+  </body>
+</html>

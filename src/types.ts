@@ -164,6 +164,17 @@ export interface SessionSnapshot {
   };
 }
 
+export interface ConnectSnapshot {
+  accountBound: boolean;
+  authState: AuthState;
+  authErrorCode: string | null;
+  accountDisplayName: string | null;
+  qrDataUrl: string | null;
+  qrExpiresAt: number | null;
+  automationEnabled: boolean;
+  wechatQr: AccountWechatQrPreview | null;
+}
+
 export interface SharedSessionSummary {
   sessionId: string;
   accountDisplayName: string;

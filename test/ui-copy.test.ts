@@ -120,3 +120,35 @@ describe("public reply-provider copy", () => {
     expect(publicSource).not.toContain("data.expiresAt");
   });
 });
+
+describe("focused connect page copy", () => {
+  it("contains only login and current-account business QR controls", () => {
+    const html = readFileSync(
+      join(process.cwd(), "public", "connect.html"),
+      "utf8",
+    );
+    const script = readFileSync(
+      join(process.cwd(), "public", "connect.js"),
+      "utf8",
+    );
+    const publicSource = `${html}\n${script}`;
+
+    expect(html).toContain("01 · CONNECT");
+    expect(html).toContain("扫码登录");
+    expect(publicSource).toContain("视频号身份已验证");
+    expect(html).toContain("刷新二维码");
+    expect(html).toContain("当前账号");
+    expect(html).toContain("业务微信二维码");
+    expect(publicSource).toContain("替换二维码");
+    expect(html).toContain("删除二维码");
+    expect(html).not.toContain("会话切换");
+    expect(html).not.toContain("回复模型");
+    expect(html).not.toContain("招聘岗位号");
+    expect(html).not.toContain("消息与回复");
+    expect(html).not.toContain("停止自动回复");
+    expect(script).toContain('api("/api/connect")');
+    expect(script).toContain('api("/api/connect/login"');
+    expect(script).toContain('api("/api/connect/wechat-qr"');
+    expect(publicSource).not.toContain("doubao-seed-character-260628");
+  });
+});

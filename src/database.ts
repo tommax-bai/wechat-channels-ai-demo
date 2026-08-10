@@ -24,6 +24,7 @@ export function openDatabase(path: string): SqliteDatabase {
       auth_generation INTEGER NOT NULL DEFAULT 0,
       run_generation INTEGER NOT NULL DEFAULT 0,
       account_key_hash TEXT UNIQUE,
+      linked_session_id TEXT,
       last_error_code TEXT
     );
 
@@ -130,6 +131,9 @@ export function openDatabase(path: string): SqliteDatabase {
   }
   if (!sessionColumns.some((column) => column.name === "funnel_job_number")) {
     db.exec("ALTER TABLE demo_sessions ADD COLUMN funnel_job_number TEXT");
+  }
+  if (!sessionColumns.some((column) => column.name === "linked_session_id")) {
+    db.exec("ALTER TABLE demo_sessions ADD COLUMN linked_session_id TEXT");
   }
   const sourceColumns = db.pragma("table_info(source_states)") as Array<{ name: string }>;
   if (!sourceColumns.some((column) => column.name === "last_attempt_at")) {

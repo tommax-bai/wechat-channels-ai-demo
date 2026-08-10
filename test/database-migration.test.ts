@@ -99,6 +99,10 @@ describe("authenticated session persistence migration", () => {
         expect.objectContaining({ name: "byte_length", notnull: 1 }),
         expect.objectContaining({ name: "updated_at", notnull: 1 }),
       ]));
+    expect(database.prepare("PRAGMA table_info(demo_sessions)").all())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "linked_session_id", notnull: 0 }),
+      ]));
     expect(database.prepare(`
       SELECT last_attempt_at AS lastAttemptAt
       FROM source_states WHERE session_id = 'existing' AND source = 'comment'

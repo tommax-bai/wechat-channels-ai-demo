@@ -224,6 +224,18 @@ export class WorkerCoordinator {
     } catch (error) {
       const duplicate = error instanceof Error
         && error.message.includes("demo_sessions.account_key_hash");
+      if (duplicate) {
+        const linked = this.repository.linkAuthenticationToExistingAccount(
+          session.id,
+          session.authGeneration,
+          accountKeyHash,
+          Date.now(),
+        );
+        if (linked) {
+          this.log.info("[demo] platform account already retained; login handoff recorded");
+          return;
+        }
+      }
       this.repository.setAuthStateIfGeneration(
         session.id,
         session.authGeneration,

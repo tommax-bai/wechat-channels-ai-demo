@@ -19,6 +19,7 @@ import {
   SessionLimitError,
   type SessionService,
 } from "./service/session-service.js";
+import type { ConnectSnapshot } from "./types.js";
 
 export interface ServerDependencies {
   config: AppConfig;
@@ -64,6 +65,7 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
       request.url.startsWith("/api/")
       || request.url.startsWith("/partner/v1")
       || request.url === "/"
+      || request.url.startsWith("/connect")
     ) {
       reply.header("Cache-Control", "no-store");
       reply.header("X-Content-Type-Options", "nosniff");
@@ -94,6 +96,44 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
       deps.config.wechatBrowserExecutablePath,
     ),
   }));
+
+  app.get("/connect", async (_request, reply) => reply.sendFile("connect.html"));
+  app.get("/connect/", async (_request, reply) => reply.sendFile("connect.html"));
+
+  app.get("/api/connect", async (request, reply) => {
+    const context = await ensureConnectContext(request, reply, deps);
+    return connectSnapshot(context.session, context.accountBound, deps);
+  });
+
+  app.post("/api/connect/login", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    const existing = resolveConnectContext(request, reply, deps);
+    if (!existing) {
+      const context = await createPendingConnectContext(reply, deps);
+      return connectSnapshot(context.session, false, deps);
+    }
+    await deps.sessions.startLogin(existing.session);
+    const current = deps.repository.getSession(existing.session.id) ?? existing.session;
+    return connectSnapshot(current, existing.accountBound, deps);
+  });
+
+  app.get("/api/connect/wechat-qr", async (request, reply) => {
+    const session = requireConnectAccount(request, reply, deps);
+    return { wechatQr: deps.sessions.getAccountWechatQr(session) };
+  });
+
+  app.put("/api/connect/wechat-qr", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    const session = requireConnectAccount(request, reply, deps);
+    const body = accountWechatQrBody.parse(request.body);
+    return { wechatQr: deps.sessions.setAccountWechatQr(session, body.dataUrl) };
+  });
+
+  app.delete("/api/connect/wechat-qr", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    const session = requireConnectAccount(request, reply, deps);
+    return { wechatQr: deps.sessions.deleteAccountWechatQr(session) };
+  });
 
   app.get("/api/session", async (request, reply) => {
     const session = ensureSession(request, reply, deps);
@@ -286,6 +326,102 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   return app;
 }
 
+interface ConnectContext {
+  session: SessionRow;
+  accountBound: boolean;
+}
+
+async function ensureConnectContext(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: ServerDependencies,
+): Promise<ConnectContext> {
+  return resolveConnectContext(request, reply, deps)
+    ?? createPendingConnectContext(reply, deps);
+}
+
+function resolveConnectContext(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: ServerDependencies,
+): ConnectContext | null {
+  const affinityName = connectAffinityCookieName(deps.config);
+  const affinityId = request.cookies[affinityName];
+  if (affinityId) {
+    const account = deps.sessions.resolveShared(affinityId);
+    if (account) return { session: account, accountBound: true };
+    reply.clearCookie(affinityName, cookieOptions(deps.config));
+  }
+
+  const pendingName = connectPendingCookieName(deps.config);
+  const pendingToken = request.cookies[pendingName];
+  if (!pendingToken) return null;
+  const pending = deps.sessions.resolve(pendingToken);
+  if (!pending) {
+    reply.clearCookie(pendingName, cookieOptions(deps.config));
+    return null;
+  }
+
+  const linked = pending.linkedSessionId
+    ? deps.sessions.resolveShared(pending.linkedSessionId)
+    : null;
+  const account = linked ?? (pending.accountKeyHash ? pending : null);
+  if (account) {
+    reply.setCookie(affinityName, account.id, cookieOptions(deps.config));
+    reply.clearCookie(pendingName, cookieOptions(deps.config));
+    return { session: account, accountBound: true };
+  }
+  return { session: pending, accountBound: false };
+}
+
+async function createPendingConnectContext(
+  reply: FastifyReply,
+  deps: ServerDependencies,
+): Promise<ConnectContext> {
+  const browser = deps.sessions.createBrowserSession();
+  await deps.sessions.startLogin(browser.row);
+  reply.setCookie(
+    connectPendingCookieName(deps.config),
+    browser.token,
+    cookieOptions(deps.config),
+  );
+  return {
+    session: deps.repository.getSession(browser.row.id) ?? browser.row,
+    accountBound: false,
+  };
+}
+
+function requireConnectAccount(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: ServerDependencies,
+): SessionRow {
+  const context = resolveConnectContext(request, reply, deps);
+  if (!context?.accountBound) {
+    reply.code(401);
+    throw new Error("connect_account_required");
+  }
+  return context.session;
+}
+
+async function connectSnapshot(
+  session: SessionRow,
+  accountBound: boolean,
+  deps: ServerDependencies,
+): Promise<ConnectSnapshot> {
+  const snapshot = await deps.sessions.snapshot(session);
+  return {
+    accountBound,
+    authState: snapshot.authState,
+    authErrorCode: snapshot.authErrorCode,
+    accountDisplayName: snapshot.accountDisplayName,
+    qrDataUrl: snapshot.qrDataUrl,
+    qrExpiresAt: snapshot.qrExpiresAt,
+    automationEnabled: snapshot.automationEnabled,
+    wechatQr: accountBound ? deps.sessions.getAccountWechatQr(session) : null,
+  };
+}
+
 function ensureSession(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -354,6 +490,14 @@ function selectedSessionCookieName(config: AppConfig): string {
   return `${config.sessionCookieName}_selected`;
 }
 
+function connectPendingCookieName(config: AppConfig): string {
+  return `${config.sessionCookieName}_connect_pending`;
+}
+
+function connectAffinityCookieName(config: AppConfig): string {
+  return `${config.sessionCookieName}_connect_account`;
+}
+
 function cookieOptions(config: AppConfig): {
   path: string;
   httpOnly: true;
@@ -407,11 +551,13 @@ function isAccountWechatQrPut(request: FastifyRequest): boolean {
   if (request.method !== "PUT") return false;
   const path = request.url.split("?", 1)[0];
   return path === "/api/session/wechat-qr"
+    || path === "/api/connect/wechat-qr"
     || /^\/partner\/v1\/accounts\/[A-Za-z0-9_-]{43}\/wechat-qr$/.test(path ?? "");
 }
 
 function statusFor(code: string): number {
   if (code === "demo_session_required") return 401;
+  if (code === "connect_account_required") return 401;
   if (code === "partner_api_unauthorized") return 401;
   if (code === "cross_origin_mutation_rejected") return 403;
   if (

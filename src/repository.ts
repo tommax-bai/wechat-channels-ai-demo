@@ -25,6 +25,7 @@ export interface SessionRow {
   authGeneration: number;
   runGeneration: number;
   accountKeyHash: string | null;
+  linkedSessionId: string | null;
   lastErrorCode: string | null;
 }
 
@@ -88,6 +89,7 @@ interface RawSession {
   auth_generation: number;
   run_generation: number;
   account_key_hash: string | null;
+  linked_session_id: string | null;
   last_error_code: string | null;
 }
 
@@ -177,6 +179,13 @@ export class DemoRepository {
     return row ? mapSession(row) : null;
   }
 
+  getSessionByAccountKeyHash(accountKeyHash: string): SessionRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM demo_sessions WHERE account_key_hash = ?")
+      .get(accountKeyHash) as RawSession | undefined;
+    return row ? mapSession(row) : null;
+  }
+
   listSessionsByAuth(states: readonly AuthState[], now: number): SessionRow[] {
     if (states.length === 0) return [];
     const placeholders = states.map(() => "?").join(",");
@@ -215,7 +224,7 @@ export class DemoRepository {
           UPDATE demo_sessions
           SET auth_state = 'qr_pending', auth_generation = ?, run_generation = run_generation + 1,
               account_key_hash = NULL, platform_persistent = 0, expires_at = ?,
-              last_error_code = NULL, updated_at = ?
+              linked_session_id = NULL, last_error_code = NULL, updated_at = ?
           WHERE id = ?
         `)
         .run(generation, expiresAt, now, id);
@@ -286,6 +295,29 @@ export class DemoRepository {
         .run(id, credentialEnvelope, now);
       this.appendEvent(id, "auth.updated", null, now);
       return true;
+    })();
+  }
+
+  linkAuthenticationToExistingAccount(
+    id: string,
+    generation: number,
+    accountKeyHash: string,
+    now: number,
+  ): SessionRow | null {
+    return this.db.transaction(() => {
+      const target = this.getSessionByAccountKeyHash(accountKeyHash);
+      if (!target || target.id === id) return null;
+      const result = this.db
+        .prepare(`
+          UPDATE demo_sessions
+          SET auth_state = 'auth_required', linked_session_id = ?,
+              last_error_code = 'account_already_connected', updated_at = ?
+          WHERE id = ? AND auth_generation = ?
+        `)
+        .run(target.id, now, id, generation);
+      if (result.changes === 0) return null;
+      this.appendEvent(id, "auth.updated", null, now);
+      return target;
     })();
   }
 
@@ -976,6 +1008,7 @@ function mapSession(row: RawSession): SessionRow {
     authGeneration: row.auth_generation,
     runGeneration: row.run_generation,
     accountKeyHash: row.account_key_hash,
+    linkedSessionId: row.linked_session_id,
     lastErrorCode: row.last_error_code,
   };
 }
