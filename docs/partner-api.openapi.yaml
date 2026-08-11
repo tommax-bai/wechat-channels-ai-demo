@@ -55,7 +55,7 @@ paths:
       description: |
         Creates a retained account container with automatic replies enabled,
         provider `funnel`, and default job ID
-        `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`. Automation becomes effective
+        `2630c9c4-f4a6-47a8-956c-36538b932fd2`. Automation becomes effective
         only after login and source baseline initialization complete.
         The request has no body. Repeating the request creates another account.
       responses:
@@ -821,7 +821,7 @@ components:
         replySettings:
           provider: funnel
           providerConfigured: true
-          jobNumber: 4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb
+          jobNumber: 2630c9c4-f4a6-47a8-956c-36538b932fd2
         wechatQr:
           configured: true
           mimeType: image/png

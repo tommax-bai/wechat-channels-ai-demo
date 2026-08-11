@@ -93,7 +93,7 @@ describe("Partner account creation defaults documentation", () => {
       "  /accounts:",
       "    get:",
     );
-    const defaultJob = "4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb";
+    const defaultJob = "2630c9c4-f4a6-47a8-956c-36538b932fd2";
 
     expect(markdownSection).toContain("默认开启自动回复");
     expect(markdownSection).toContain("招聘接口");

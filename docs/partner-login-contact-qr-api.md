@@ -51,7 +51,7 @@ export ACCOUNT_ID='<POST /accounts 返回的 accountId>'
 
 ## 2. 推荐流程
 
-1. `POST /accounts` 创建账号容器并保存 `accountId`；容器默认开启自动回复，使用招聘接口和岗位 ID `4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb`。
+1. `POST /accounts` 创建账号容器并保存 `accountId`；容器默认开启自动回复，使用招聘接口和岗位 ID `2630c9c4-f4a6-47a8-956c-36538b932fd2`。
 2. `POST /accounts/{accountId}/login/qr` 获取登录二维码。
 3. 每 2 秒调用 `GET /accounts/{accountId}/login/status`。
 4. 只有 `login.succeeded=true` 才认为登录完成。
@@ -93,7 +93,7 @@ curl --fail-with-body -X POST \
   "replySettings": {
     "provider": "funnel",
     "providerConfigured": true,
-    "jobNumber": "4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb"
+    "jobNumber": "2630c9c4-f4a6-47a8-956c-36538b932fd2"
   }
 }
 ```

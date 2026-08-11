@@ -146,7 +146,7 @@ describe("focused connect page copy", () => {
     expect(html).toContain("回复设置");
     expect(html).toContain("招聘接口");
     expect(html).toContain('id="funnelJobNumber"');
-    expect(html).toContain('value="4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb"');
+    expect(html).toContain('value="2630c9c4-f4a6-47a8-956c-36538b932fd2"');
     expect(html).not.toContain("招聘岗位号");
     expect(html).not.toContain("消息与回复");
     expect(html).not.toContain("停止自动回复");

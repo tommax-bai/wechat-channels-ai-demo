@@ -45,7 +45,7 @@ const errorLabels = {
 };
 
 const MAX_QR_BYTES = 512 * 1024;
-const DEFAULT_FUNNEL_JOB_NUMBER = "4add94fa-0d2d-4cd8-8f1c-deecdb6fb8cb";
+const DEFAULT_FUNNEL_JOB_NUMBER = "2630c9c4-f4a6-47a8-956c-36538b932fd2";
 let current = null;
 let refreshing = false;
 let loginBusy = false;
