@@ -106,28 +106,85 @@ describe("multi-user demo flow", () => {
     expect(receipt?.value.length).toBeGreaterThan(20);
   });
 
-  it("stores an already-seen-era direct message without replying to it", async () => {
+  it("keeps a pre-login item historical while answering a post-login item behind newer content", async () => {
     const server = requireApp(app);
     const visitor = await bootstrap(server);
     await startLogin(server, visitor.cookie);
     await workers.runOnce();
 
-    const baseline = requireSessionId(database);
-    const watermark = repository.latestInboundOccurredAt(baseline, "dm");
-    if (watermark === null) throw new Error("missing baseline direct message");
+    const sessionId = requireSessionId(database);
+    const loginAt = requireLoginAnchor(database, sessionId);
 
-    // Reading a window rather than a strict delta surfaces items the baseline already covered era-
-    // wise. Anything older than the newest stored item is content to display, never news to answer.
+    // Store something newer first: the retired watermark would have blocked the later arrival
+    // below, so this ordering is what proves eligibility anchors on the login, not on storage.
     gateway.newItems.set("finder-1", [
-      fakeDm("older-than-watermark", "finder-1", "基线之前的旧私信", watermark - 60_000),
-      fakeDm("newer-than-watermark", "finder-1", "刚到的新私信", watermark + 60_000),
+      fakeDm("post-login-newest", "finder-1", "最新的私信", loginAt + 120_000),
+    ]);
+    await workers.runOnce();
+
+    gateway.newItems.set("finder-1", [
+      fakeDm("pre-login", "finder-1", "登录之前的旧私信", loginAt - 60_000),
+      fakeDm("post-login-behind-newest", "finder-1", "晚发现的登录后私信", loginAt + 60_000),
     ]);
     await workers.runOnce();
 
     const timeline = (await snapshot(server, visitor.cookie)).timeline;
-    expect(timeline.find((item) => item.text === "基线之前的旧私信"))
+    expect(timeline.find((item) => item.text === "登录之前的旧私信"))
       .toMatchObject({ historical: true, replyState: null });
-    expect(timeline.find((item) => item.text === "刚到的新私信"))
+    expect(timeline.find((item) => item.text === "晚发现的登录后私信"))
+      .toMatchObject({ historical: false, replyState: "confirmed" });
+    expect(gateway.sends).toHaveLength(2);
+  });
+
+  it("answers a post-login direct message surfaced while the baseline still walks", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    // The item must postdate the login the same tick performs, so its timestamp sits slightly in
+    // the future relative to this line; the anchor is stamped between here and the baseline walk.
+    gateway.baselineExtraItems.push(
+      fakeDm("during-baseline", "finder-1", "基线期间的新私信", Date.now() + 5_000),
+    );
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    const timeline = (await snapshot(server, visitor.cookie)).timeline;
+    expect(timeline.find((item) => item.text === "历史消息"))
+      .toMatchObject({ historical: true, replyState: null });
+    expect(timeline.find((item) => item.text === "基线期间的新私信"))
+      .toMatchObject({ historical: false, replyState: "confirmed" });
+    expect(gateway.sends).toHaveLength(1);
+  });
+
+  it("re-anchors on a fresh scan so logged-out-gap messages stay historical", async () => {
+    const server = requireApp(app);
+    // Pin the platform account so the re-scan below reconnects the same identity.
+    gateway.accountName = "finder-1";
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    // Pretend the first login happened hours ago, then re-scan: the anchor must move to the new
+    // login, so a message from the logged-out gap is backlog even though the old anchor predates it.
+    const sessionId = requireSessionId(database);
+    const backdated = Date.now() - 3 * 3_600_000;
+    database?.prepare("UPDATE demo_sessions SET last_login_at = ? WHERE id = ?")
+      .run(backdated, sessionId);
+
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    const reanchored = requireLoginAnchor(database, sessionId);
+    expect(reanchored).toBeGreaterThan(backdated);
+
+    gateway.newItems.set("finder-1", [
+      fakeDm("logged-out-gap", "finder-1", "掉线期间的私信", Date.now() - 3_600_000),
+      fakeDm("fresh-after-rescan", "finder-1", "重新扫码后的私信"),
+    ]);
+    await workers.runOnce();
+
+    const timeline = (await snapshot(server, visitor.cookie)).timeline;
+    expect(timeline.find((item) => item.text === "掉线期间的私信"))
+      .toMatchObject({ historical: true, replyState: null });
+    expect(timeline.find((item) => item.text === "重新扫码后的私信"))
       .toMatchObject({ historical: false, replyState: "confirmed" });
     expect(gateway.sends).toHaveLength(1);
   });
@@ -138,13 +195,11 @@ describe("multi-user demo flow", () => {
     await startLogin(server, visitor.cookie);
     await workers.runOnce();
 
-    // Age the baseline item so the watermark cannot be what blocks the reply: the stale message
-    // below is newer than everything stored and is held back purely by how late it was seen.
+    // Backdate the anchor so the stale message below is post-login: the age cap alone must be
+    // what holds it back, keeping the two brakes independently testable.
     const sessionId = requireSessionId(database);
-    const aged = database?.prepare(
-      "UPDATE inbound_items SET occurred_at = ? WHERE session_id = ? AND source = 'dm'",
-    ).run(Date.now() - 9 * 3_600_000, sessionId);
-    expect(aged?.changes).toBe(1);
+    database?.prepare("UPDATE demo_sessions SET last_login_at = ? WHERE id = ?")
+      .run(Date.now() - 8 * 3_600_000, sessionId);
 
     // A lane that was blind for hours must not wake up and answer the whole backlog at once.
     gateway.newItems.set("finder-1", [
@@ -1226,7 +1281,9 @@ describe("multi-user demo flow", () => {
       WHERE session_id = ? AND source = 'comment'
     `).run(legacyCursorEnvelope, Date.now(), sessionId);
     gateway.newComments.set("finder-1", [
-      fakeComment("found-during-recovery", "恢复时发现的旧评论"),
+      // Old content carries a pre-login timestamp: the anchor, not the recovery scan itself, is
+      // what keeps it historical.
+      fakeComment("found-during-recovery", "恢复时发现的旧评论", Date.now() - 120_000),
     ]);
 
     await workers.runOnce();
@@ -1361,7 +1418,11 @@ describe("multi-user demo flow", () => {
     gateway.commentSyncError = null;
     clearRetryDelay(database, sessionId, "comment");
     gateway.newComments.set("finder-1", [
-      fakeComment("historical-after-interrupted-baseline", "中断基线后的历史评论"),
+      fakeComment(
+        "historical-after-interrupted-baseline",
+        "中断基线后的历史评论",
+        Date.now() - 120_000,
+      ),
     ]);
     await workers.runOnce();
 
@@ -1542,6 +1603,14 @@ function requireSessionId(database: SqliteDatabase | undefined): string {
     | undefined;
   if (!row) throw new Error("missing demo session");
   return row.id;
+}
+
+function requireLoginAnchor(database: SqliteDatabase | undefined, sessionId: string): number {
+  const row = database?.prepare(
+    "SELECT last_login_at AS value FROM demo_sessions WHERE id = ?",
+  ).get(sessionId) as { value: number | null } | undefined;
+  if (row?.value == null) throw new Error("missing login anchor");
+  return row.value;
 }
 
 function responseCookie(

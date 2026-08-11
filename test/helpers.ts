@@ -90,6 +90,7 @@ export class FakeWechatGateway implements WechatGateway {
   }> = [];
   readonly newItems = new Map<string, NormalizedInboundItem[]>();
   readonly newComments = new Map<string, NormalizedInboundItem[]>();
+  readonly baselineExtraItems: NormalizedInboundItem[] = [];
   readonly commentCursors: Array<string | null> = [];
   accountName: string | null = null;
   captureRequired = false;
@@ -165,11 +166,18 @@ export class FakeWechatGateway implements WechatGateway {
       this.historySequence += 1;
       const hasMore = this.historyPagesRemaining > 0;
       return {
-        items: [fakeDm(
-          `history-${session.finderUsername}-${this.historySequence}`,
-          session.finderUsername,
-          "历史消息",
-        )],
+        // Existing content happened before the operator connected the account, so the fake keeps
+        // its baseline item shortly pre-login — recent enough that only the login anchor, not the
+        // age cap, is what makes it historical.
+        items: [
+          fakeDm(
+            `history-${session.finderUsername}-${this.historySequence}`,
+            session.finderUsername,
+            "历史消息",
+            Date.now() - 60_000,
+          ),
+          ...this.baselineExtraItems.splice(0),
+        ],
         cursor: hasMore ? `history-${this.historyPagesRemaining}` : "cursor-1",
         hasMore,
       };
@@ -361,6 +369,7 @@ export function fakeDm(
 export function fakeComment(
   externalId: string,
   text: string,
+  occurredAt: number = Date.now(),
 ): NormalizedInboundItem {
   return {
     source: "comment",
@@ -368,7 +377,7 @@ export function fakeComment(
     authorId: `commenter-${externalId}`,
     authorName: "测试评论者",
     text,
-    occurredAt: Date.now(),
+    occurredAt,
     target: {
       kind: "comment",
       postId: `post-${externalId}`,

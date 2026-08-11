@@ -25,7 +25,8 @@ export function openDatabase(path: string): SqliteDatabase {
       run_generation INTEGER NOT NULL DEFAULT 0,
       account_key_hash TEXT UNIQUE,
       linked_session_id TEXT,
-      last_error_code TEXT
+      last_error_code TEXT,
+      last_login_at INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_demo_sessions_expiry
@@ -136,6 +137,16 @@ export function openDatabase(path: string): SqliteDatabase {
   }
   if (!sessionColumns.some((column) => column.name === "linked_session_id")) {
     db.exec("ALTER TABLE demo_sessions ADD COLUMN linked_session_id TEXT");
+  }
+  if (!sessionColumns.some((column) => column.name === "last_login_at")) {
+    db.exec("ALTER TABLE demo_sessions ADD COLUMN last_login_at INTEGER");
+    // A retained row's true login time is unknowable, so the migration moment stands in for it:
+    // everything already in flight is historical at cutover, and nothing pre-deploy is answered.
+    db.prepare(`
+      UPDATE demo_sessions
+      SET last_login_at = ?
+      WHERE account_key_hash IS NOT NULL
+    `).run(Date.now());
   }
   const sourceColumns = db.pragma("table_info(source_states)") as Array<{ name: string }>;
   if (!sourceColumns.some((column) => column.name === "last_attempt_at")) {

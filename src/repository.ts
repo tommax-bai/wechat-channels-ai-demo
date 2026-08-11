@@ -27,6 +27,7 @@ export interface SessionRow {
   accountKeyHash: string | null;
   linkedSessionId: string | null;
   lastErrorCode: string | null;
+  lastLoginAt: number | null;
 }
 
 export interface SourceRow {
@@ -93,6 +94,7 @@ interface RawSession {
   account_key_hash: string | null;
   linked_session_id: string | null;
   last_error_code: string | null;
+  last_login_at: number | null;
 }
 
 interface RawSource {
@@ -301,11 +303,11 @@ export class DemoRepository {
         .prepare(`
           UPDATE demo_sessions
           SET auth_state = 'baseline_sync', account_key_hash = ?, last_error_code = NULL,
-              platform_persistent = 1, expires_at = ?,
+              platform_persistent = 1, expires_at = ?, last_login_at = ?,
               run_generation = run_generation + 1, updated_at = ?
           WHERE id = ? AND auth_generation = ?
         `)
-        .run(accountKeyHash, ROLLBACK_SAFE_PLATFORM_EXPIRY_MS, now, id, generation);
+        .run(accountKeyHash, ROLLBACK_SAFE_PLATFORM_EXPIRY_MS, now, now, id, generation);
       if (result.changes === 0) return false;
       this.db
         .prepare(`
@@ -623,20 +625,6 @@ export class DemoRepository {
       );
     if (result.changes > 0) this.appendEvent(id, "connection.updated", source, now);
     return result.changes > 0;
-  }
-
-  /**
-   * Newest platform timestamp already stored for a source. It is the reply watermark once a lane
-   * reads a window instead of a strict delta: anything at or before what we already hold is content
-   * we have seen, not something that just arrived.
-   */
-  latestInboundOccurredAt(id: string, source: InboundSource): number | null {
-    const row = this.db
-      .prepare(
-        "SELECT MAX(occurred_at) AS value FROM inbound_items WHERE session_id = ? AND source = ?",
-      )
-      .get(id, source) as { value: number | null } | undefined;
-    return row?.value ?? null;
   }
 
   insertInbound(input: {
@@ -1056,6 +1044,7 @@ function mapSession(row: RawSession): SessionRow {
     accountKeyHash: row.account_key_hash,
     linkedSessionId: row.linked_session_id,
     lastErrorCode: row.last_error_code,
+    lastLoginAt: row.last_login_at,
   };
 }
 

@@ -111,6 +111,17 @@ describe("authenticated session persistence migration", () => {
       SELECT last_attempt_at AS lastAttemptAt
       FROM source_states WHERE session_id = 'fresh' AND source = 'comment'
     `).get()).toEqual({ lastAttemptAt: null });
+
+    // A retained authenticated row cannot know its true login time, so the migration moment
+    // stands in as its reply anchor; a row that never authenticated waits for its first login.
+    const migrationStart = Date.now() - 60_000;
+    const anchored = database.prepare(
+      "SELECT last_login_at AS value FROM demo_sessions WHERE id = 'existing'",
+    ).get() as { value: number | null };
+    expect(anchored.value).toBeGreaterThanOrEqual(migrationStart);
+    expect(database.prepare(
+      "SELECT last_login_at AS value FROM demo_sessions WHERE id = 'fresh'",
+    ).get()).toEqual({ value: null });
   });
 
   it("creates the account QR table idempotently and cascades account deletion", () => {

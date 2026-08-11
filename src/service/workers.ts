@@ -419,9 +419,6 @@ export class WorkerCoordinator {
       if (source.source === "comment" && cursor === null && source.baselineComplete) {
         cursor = encodeCommentObservationMarker(true);
       }
-      const replyWatermarkMs = source.baselineComplete
-        ? this.repository.latestInboundOccurredAt(session.id, source.source)
-        : null;
       let pageCount = 0;
       for (;;) {
         const page = source.source === "dm"
@@ -436,7 +433,7 @@ export class WorkerCoordinator {
             );
         const current = this.repository.getSession(session.id);
         if (!current || current.authGeneration !== session.authGeneration) return;
-        this.persistPage(current, source, page, replyWatermarkMs);
+        this.persistPage(current, page);
         cursor = page.cursor;
         const cursorEnvelope = this.secureStore.encryptJson(
           cursor,
@@ -556,28 +553,26 @@ export class WorkerCoordinator {
     }
   }
 
-  private persistPage(
-    session: SessionRow,
-    source: SourceRow,
-    page: WechatSyncPage,
-    replyWatermarkMs: number | null,
-  ): void {
-    const baselineHistorical = !source.baselineComplete;
+  private persistPage(session: SessionRow, page: WechatSyncPage): void {
     const now = Date.now();
     for (const item of page.items) {
       const id = randomUUID();
-      // Two independent reasons a first-seen item must not be answered automatically. Reading a
-      // window rather than a strict delta surfaces items we already hold, so anything older than
-      // the newest stored item is content, not news. And an item first seen long after it arrived
-      // means this lane was blind for a while; answering a stale backlog all at once is worse than
-      // leaving it visible for a human, so the age cap bounds that blast radius.
-      const olderThanStored = replyWatermarkMs !== null && item.occurredAt < replyWatermarkMs;
+      // Two independent reasons a first-seen item must not be answered automatically. Content from
+      // before the current authorization's login is backlog, not news, whichever scan surfaces it —
+      // eligibility anchors on when the item happened, not on how it was discovered. And an item
+      // first seen long after it arrived means this lane was blind for a while; answering a stale
+      // backlog all at once is worse than leaving it visible for a human, so the age cap bounds
+      // that blast radius.
+      const preLogin = session.lastLoginAt === null || item.occurredAt < session.lastLoginAt;
       const discoveredTooLate = now - item.occurredAt > MAX_AUTO_REPLY_AGE_MS;
-      const historical = baselineHistorical || olderThanStored || discoveredTooLate;
+      const historical = preLogin || discoveredTooLate;
+      // baseline_sync counts: a post-login item surfaced while the baseline still walks must store
+      // its eligibility now, because deduplication means no later poll will offer it again. The
+      // queued job waits anyway — dispatch requires the session to be active.
       const replyEligible =
         !historical
         && session.automationEnabled
-        && session.authState === "active";
+        && (session.authState === "active" || session.authState === "baseline_sync");
       this.repository.insertInbound({
         id,
         sessionId: session.id,
