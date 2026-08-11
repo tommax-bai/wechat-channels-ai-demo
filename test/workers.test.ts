@@ -120,6 +120,131 @@ describe("WorkerCoordinator scheduling", () => {
     },
   );
 
+  it("does not repeat a comment sweep within 90 seconds across restarts", async () => {
+    const config = testConfig();
+    database = openDatabase(":memory:");
+    const repository = new DemoRepository(database);
+    const secureStore = new SecureStore(config.encryptionKey);
+    const gateway = new FakeWechatGateway();
+    const anchoredAt = 1_000_000;
+    let now = anchoredAt;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    authenticateFixture(repository, secureStore, anchoredAt, {
+      state: "healthy",
+      baselineComplete: true,
+      errorCode: null,
+    });
+
+    // The fast lane was just attempted, so only the sweep is eligible on this tick.
+    const first = createWorkers(config, repository, secureStore, gateway);
+    first.start();
+    await first.stop();
+    expect(gateway.commentSyncCalls).toBe(0);
+    expect(gateway.sweepCalls).toEqual([4]);
+
+    now = anchoredAt + 89_999;
+    const beforeDue = createWorkers(config, repository, secureStore, gateway);
+    beforeDue.start();
+    await beforeDue.stop();
+    expect(gateway.sweepCalls).toEqual([4]);
+
+    now = anchoredAt + 90_000;
+    const whenDue = createWorkers(config, repository, secureStore, gateway);
+    whenDue.start();
+    await whenDue.stop();
+    expect(gateway.sweepCalls).toEqual([4, 5]);
+  });
+
+  it("advances the sweep rank and wraps at the bound and at a short feed", async () => {
+    const config = testConfig();
+    database = openDatabase(":memory:");
+    const repository = new DemoRepository(database);
+    const secureStore = new SecureStore(config.encryptionKey);
+    const gateway = new FakeWechatGateway();
+    const anchoredAt = 1_000_000;
+    let now = anchoredAt;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    authenticateFixture(repository, secureStore, anchoredAt, {
+      state: "healthy",
+      baselineComplete: true,
+      errorCode: null,
+    });
+
+    const runOnce = async (): Promise<void> => {
+      const workers = createWorkers(config, repository, secureStore, gateway);
+      workers.start();
+      await workers.stop();
+    };
+
+    await runOnce();
+    expect(repository.getSource("session-1", "comment")).toMatchObject({ sweepRank: 5 });
+
+    // The last swept rank wraps back to the first.
+    expect(repository.advanceCommentSweep("session-1", 0, 100, now)).toBe(true);
+    now = anchoredAt + 90_000;
+    await runOnce();
+    expect(repository.getSource("session-1", "comment")).toMatchObject({ sweepRank: 4 });
+
+    // A feed that ends before the target rank wraps without advancing past it.
+    expect(repository.advanceCommentSweep("session-1", 0, 42, now)).toBe(true);
+    gateway.sweepWrappedRanks.add(42);
+    now = anchoredAt + 180_000;
+    await runOnce();
+    expect(repository.getSource("session-1", "comment")).toMatchObject({ sweepRank: 4 });
+    expect(gateway.sweepCalls).toEqual([4, 100, 42]);
+  });
+
+  it("routes a sweep failure through the shared comment backoff", async () => {
+    const config = testConfig();
+    database = openDatabase(":memory:");
+    const repository = new DemoRepository(database);
+    const secureStore = new SecureStore(config.encryptionKey);
+    const gateway = new FakeWechatGateway();
+    const anchoredAt = 1_000_000;
+    let now = anchoredAt;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    authenticateFixture(repository, secureStore, anchoredAt, {
+      state: "healthy",
+      baselineComplete: true,
+      errorCode: null,
+    });
+
+    gateway.sweepError = new WechatApiError("network_error", "postList", false);
+    const failing = createWorkers(config, repository, secureStore, gateway);
+    failing.start();
+    await failing.stop();
+    expect(gateway.sweepCalls).toEqual([4]);
+    expect(repository.getSource("session-1", "comment")).toMatchObject({
+      state: "error",
+      lastErrorCode: "network_error",
+      consecutiveFailures: 1,
+      nextAttemptAt: anchoredAt + 60_000,
+      sweepRank: null,
+    });
+
+    // Both lanes wait out the same persisted schedule.
+    gateway.sweepError = null;
+    now = anchoredAt + 30_000;
+    const backedOff = createWorkers(config, repository, secureStore, gateway);
+    backedOff.start();
+    await backedOff.stop();
+    expect(gateway.commentSyncCalls).toBe(0);
+    expect(gateway.sweepCalls).toEqual([4]);
+
+    // The fast scan recovers the lane; the unadvanced rank is retried on the next due sweep.
+    now = anchoredAt + 90_000;
+    const recovered = createWorkers(config, repository, secureStore, gateway);
+    recovered.start();
+    await recovered.stop();
+    expect(gateway.commentSyncCalls).toBe(1);
+    expect(gateway.sweepCalls).toEqual([4, 4]);
+    expect(repository.getSource("session-1", "comment")).toMatchObject({
+      state: "healthy",
+      consecutiveFailures: 0,
+      sweepRank: 5,
+    });
+  });
+
   it("runs a pending incomplete comment baseline immediately", async () => {
     const config = testConfig();
     database = openDatabase(":memory:");

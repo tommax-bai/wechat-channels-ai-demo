@@ -60,6 +60,8 @@ export function openDatabase(path: string): SqliteDatabase {
       last_error_code TEXT,
       consecutive_failures INTEGER NOT NULL DEFAULT 0,
       next_attempt_at INTEGER,
+      sweep_rank INTEGER,
+      sweep_attempt_at INTEGER,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (session_id, source)
     );
@@ -160,6 +162,13 @@ export function openDatabase(path: string): SqliteDatabase {
   }
   if (!sourceColumns.some((column) => column.name === "next_attempt_at")) {
     db.exec("ALTER TABLE source_states ADD COLUMN next_attempt_at INTEGER");
+  }
+  // Null sweep state means the first sweep step may start immediately at the first swept rank.
+  if (!sourceColumns.some((column) => column.name === "sweep_rank")) {
+    db.exec("ALTER TABLE source_states ADD COLUMN sweep_rank INTEGER");
+  }
+  if (!sourceColumns.some((column) => column.name === "sweep_attempt_at")) {
+    db.exec("ALTER TABLE source_states ADD COLUMN sweep_attempt_at INTEGER");
   }
   db.exec(`
     UPDATE source_states

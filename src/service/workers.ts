@@ -34,6 +34,14 @@ import type { StoredCredential } from "./credentials.js";
 const COMMENT_SYNC_POLL_MS = 60_000;
 const COMMENT_SYNC_WAKE_MS = 5_000;
 /**
+ * The sweep covers ranks 4 through 100 one post per step, so a full pass takes ~2.4 hours — the
+ * bound and cadence must keep one pass under the automatic-reply age cap, or comments on old
+ * posts can only ever surface as historical.
+ */
+const COMMENT_SWEEP_POLL_MS = 90_000;
+const COMMENT_SWEEP_START_RANK = 4;
+const COMMENT_SWEEP_MAX_RANK = 100;
+/**
  * A shape mismatch is unlikely to clear within one tick, so it starts slower than an ordinary
  * failure. It still retries: whether a private platform interface really changed is only knowable
  * by observing it again, so "stop forever" is a claim this service cannot honestly make.
@@ -353,29 +361,35 @@ export class WorkerCoordinator {
       ) return;
       const commentDue = source.lastAttemptAt === null
         || Date.now() - source.lastAttemptAt >= COMMENT_SYNC_POLL_MS;
-      if (
-        inboundSource === "comment"
-        && !bypassCommentDue
-        && !forceCommentSync
-        && !commentDue
-      ) return;
-      if (inboundSource === "comment") {
-        const attemptedAt = Date.now();
-        const cursorEnvelope = source.cursorEnvelope ?? this.secureStore.encryptJson(
-          null,
-          session.id,
-          "cursor:comment",
-        );
-        const attemptedSource = this.repository.markCommentSyncAttempt(
-          session.id,
-          session.authGeneration,
-          cursorEnvelope,
-          attemptedAt,
-        );
-        if (!attemptedSource) return;
-        source = attemptedSource;
+      const fastScanDue = inboundSource !== "comment"
+        || bypassCommentDue
+        || forceCommentSync
+        || commentDue;
+      let activity = false;
+      if (fastScanDue) {
+        if (inboundSource === "comment") {
+          const attemptedAt = Date.now();
+          const cursorEnvelope = source.cursorEnvelope ?? this.secureStore.encryptJson(
+            null,
+            session.id,
+            "cursor:comment",
+          );
+          const attemptedSource = this.repository.markCommentSyncAttempt(
+            session.id,
+            session.authGeneration,
+            cursorEnvelope,
+            attemptedAt,
+          );
+          if (!attemptedSource) return;
+          source = attemptedSource;
+        }
+        await this.syncSource(current, stored.value, source);
+        activity = true;
       }
-      await this.syncSource(current, stored.value, source);
+      if (inboundSource === "comment") {
+        activity = (await this.sweepCommentsIfDue(current, stored.value)) || activity;
+      }
+      if (!activity) return;
       this.savePlatformSession(session.id, session.authGeneration, stored.value);
       this.repository.setSessionActiveIfBaselinesComplete(
         session.id,
@@ -383,6 +397,55 @@ export class WorkerCoordinator {
         Date.now(),
       );
     });
+  }
+
+  /**
+   * One slow step behind its own durable 90-second gate: locate the post at the persisted rank,
+   * read its first comment page, advance. It runs only from a healthy completed lane — a failing
+   * or throttled account slows both comment lanes together — and its items pass through the same
+   * persistence as everything else, so the login anchor decides what a first visit may answer.
+   */
+  private async sweepCommentsIfDue(
+    session: SessionRow,
+    platformSession: PlatformSession,
+  ): Promise<boolean> {
+    const source = this.repository.getSource(session.id, "comment");
+    if (
+      !source
+      || !source.baselineComplete
+      || source.state !== "healthy"
+      || (source.nextAttemptAt !== null && Date.now() < source.nextAttemptAt)
+      || (source.sweepAttemptAt !== null
+        && Date.now() - source.sweepAttemptAt < COMMENT_SWEEP_POLL_MS)
+    ) return false;
+    const rank = source.sweepRank !== null
+      && source.sweepRank >= COMMENT_SWEEP_START_RANK
+      && source.sweepRank <= COMMENT_SWEEP_MAX_RANK
+      ? source.sweepRank
+      : COMMENT_SWEEP_START_RANK;
+    if (!this.repository.markCommentSweepAttempt(
+      session.id,
+      session.authGeneration,
+      Date.now(),
+    )) return false;
+    try {
+      const result = await this.wechat.sweepComments(platformSession, rank);
+      const current = this.repository.getSession(session.id);
+      if (!current || current.authGeneration !== session.authGeneration) return true;
+      this.persistPage(current, { items: result.items, cursor: null, hasMore: false });
+      const nextRank = result.wrapped || rank >= COMMENT_SWEEP_MAX_RANK
+        ? COMMENT_SWEEP_START_RANK
+        : rank + 1;
+      this.repository.advanceCommentSweep(
+        session.id,
+        session.authGeneration,
+        nextRank,
+        Date.now(),
+      );
+    } catch (error) {
+      this.recordSourceFailure(session, source, error);
+    }
+    return true;
   }
 
   /**
@@ -467,49 +530,58 @@ export class WorkerCoordinator {
         if (!page.hasMore || pageCount >= 10) break;
       }
     } catch (error) {
-      const current = this.repository.getSession(session.id);
-      if (!current || current.authGeneration !== session.authGeneration) return;
-      const latestSource = this.repository.getSource(session.id, source.source) ?? source;
-      const code = safeErrorCode(error);
-      const state = code === "auth_required"
-        ? "auth_required"
-        : code.startsWith("schema_changed")
-          ? "schema_changed"
-          : "error";
-      const consecutiveFailures = latestSource.consecutiveFailures + 1;
-      const retryDelayMs = this.retryDelayMs(source.source, state, consecutiveFailures);
-      const nextAttemptAt = state === "auth_required" ? null : Date.now() + retryDelayMs;
-      this.repository.updateSource(
+      this.recordSourceFailure(session, source, error);
+    }
+  }
+
+  /** Shared by the fast scan and the sweep: one health state and one schedule per source. */
+  private recordSourceFailure(
+    session: SessionRow,
+    source: SourceRow,
+    error: unknown,
+  ): void {
+    const current = this.repository.getSession(session.id);
+    if (!current || current.authGeneration !== session.authGeneration) return;
+    const latestSource = this.repository.getSource(session.id, source.source) ?? source;
+    const code = safeErrorCode(error);
+    const state = code === "auth_required"
+      ? "auth_required"
+      : code.startsWith("schema_changed")
+        ? "schema_changed"
+        : "error";
+    const consecutiveFailures = latestSource.consecutiveFailures + 1;
+    const retryDelayMs = this.retryDelayMs(source.source, state, consecutiveFailures);
+    const nextAttemptAt = state === "auth_required" ? null : Date.now() + retryDelayMs;
+    this.repository.updateSource(
+      session.id,
+      session.authGeneration,
+      source.source,
+      {
+        state,
+        baselineComplete: latestSource.baselineComplete,
+        cursorEnvelope: latestSource.cursorEnvelope,
+        lastSuccessAt: latestSource.lastSuccessAt,
+        lastErrorCode: code,
+        consecutiveFailures,
+        nextAttemptAt,
+      },
+      Date.now(),
+    );
+    this.log.warn(
+      `[demo] source sync failed source=${source.source}`
+      + ` session=${maskSessionId(session.id)}`
+      + ` code=${code} state=${state}`
+      + ` consecutiveFailures=${consecutiveFailures}`
+      + ` retryInMs=${nextAttemptAt === null ? "n/a" : retryDelayMs}`,
+    );
+    if (state === "auth_required") {
+      this.repository.setAuthStateIfGeneration(
         session.id,
         session.authGeneration,
-        source.source,
-        {
-          state,
-          baselineComplete: latestSource.baselineComplete,
-          cursorEnvelope: latestSource.cursorEnvelope,
-          lastSuccessAt: latestSource.lastSuccessAt,
-          lastErrorCode: code,
-          consecutiveFailures,
-          nextAttemptAt,
-        },
+        "auth_required",
+        code,
         Date.now(),
       );
-      this.log.warn(
-        `[demo] source sync failed source=${source.source}`
-        + ` session=${maskSessionId(session.id)}`
-        + ` code=${code} state=${state}`
-        + ` consecutiveFailures=${consecutiveFailures}`
-        + ` retryInMs=${nextAttemptAt === null ? "n/a" : retryDelayMs}`,
-      );
-      if (state === "auth_required") {
-        this.repository.setAuthStateIfGeneration(
-          session.id,
-          session.authGeneration,
-          "auth_required",
-          code,
-          Date.now(),
-        );
-      }
     }
   }
 

@@ -41,6 +41,8 @@ export interface SourceRow {
   lastErrorCode: string | null;
   consecutiveFailures: number;
   nextAttemptAt: number | null;
+  sweepRank: number | null;
+  sweepAttemptAt: number | null;
   updatedAt: number;
 }
 
@@ -108,6 +110,8 @@ interface RawSource {
   last_error_code: string | null;
   consecutive_failures: number;
   next_attempt_at: number | null;
+  sweep_rank: number | null;
+  sweep_attempt_at: number | null;
   updated_at: number;
 }
 
@@ -575,6 +579,51 @@ export class DemoRepository {
     if (result.changes === 0) return null;
     this.appendEvent(id, "connection.updated", "comment", now);
     return this.getSource(id, "comment");
+  }
+
+  /**
+   * Written before the sweep dispatches, like the fast lane's attempt mark, so a restart cannot
+   * produce an early or duplicate step. Deliberately quiet: a sweep attempt changes nothing a
+   * viewer can see, so it appends no event.
+   */
+  markCommentSweepAttempt(
+    id: string,
+    authGeneration: number,
+    now: number,
+  ): SourceRow | null {
+    const result = this.db
+      .prepare(`
+        UPDATE source_states
+        SET sweep_attempt_at = ?, updated_at = ?
+        WHERE session_id = ? AND source = 'comment'
+          AND EXISTS (
+            SELECT 1 FROM demo_sessions
+            WHERE id = ? AND auth_generation = ?
+          )
+      `)
+      .run(now, now, id, id, authGeneration);
+    if (result.changes === 0) return null;
+    return this.getSource(id, "comment");
+  }
+
+  /** The rank advances only after a successful step; a crash in between revisits one post. */
+  advanceCommentSweep(
+    id: string,
+    authGeneration: number,
+    rank: number,
+    now: number,
+  ): boolean {
+    return this.db
+      .prepare(`
+        UPDATE source_states
+        SET sweep_rank = ?, updated_at = ?
+        WHERE session_id = ? AND source = 'comment'
+          AND EXISTS (
+            SELECT 1 FROM demo_sessions
+            WHERE id = ? AND auth_generation = ?
+          )
+      `)
+      .run(rank, now, id, id, authGeneration).changes > 0;
   }
 
   updateSource(
@@ -1074,6 +1123,8 @@ function mapSource(row: RawSource): SourceRow {
     lastErrorCode: row.last_error_code,
     consecutiveFailures: row.consecutive_failures ?? 0,
     nextAttemptAt: row.next_attempt_at ?? null,
+    sweepRank: row.sweep_rank ?? null,
+    sweepAttemptAt: row.sweep_attempt_at ?? null,
     updatedAt: row.updated_at,
   };
 }

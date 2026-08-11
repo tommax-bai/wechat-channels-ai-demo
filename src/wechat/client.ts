@@ -41,6 +41,19 @@ export interface WechatSyncPage {
   hasMore: boolean;
 }
 
+export interface CommentSweepResult {
+  items: NormalizedInboundItem[];
+  /** True when the feed ends before the target rank: the sweep restarts from its first rank. */
+  wrapped: boolean;
+}
+
+/**
+ * The sweep locates one post by its current rank in the feed, so its page size only decides how
+ * many ranks one locating read spans. Ten keeps the page small while the fast lane's first-3
+ * bound stays untouched.
+ */
+const COMMENT_SWEEP_PAGE_SIZE = 10;
+
 export interface WechatSendResult {
   accepted: boolean;
   externalId: string | null;
@@ -90,6 +103,7 @@ export interface WechatGateway {
     cursor: string | null,
     onPostsObserved?: (cursor: string) => void,
   ): Promise<WechatSyncPage>;
+  sweepComments(session: PlatformSession, rank: number): Promise<CommentSweepResult>;
   sendReply(
     session: PlatformSession,
     target: ReplyTarget,
@@ -392,6 +406,61 @@ export class PrivateWechatGateway implements WechatGateway {
       cursor: encodeCommentObservationMarker(true),
       hasMore: false,
     };
+  }
+
+  async sweepComments(session: PlatformSession, rank: number): Promise<CommentSweepResult> {
+    const jar = this.transport.createJar(session.cookieJar);
+    const context: RequestContext = {
+      jar,
+      uin: session.uin,
+      finderUsername: session.finderUsername,
+      userAgent: session.userAgent,
+      ...(session.requestContext
+        ? { requestContext: session.requestContext }
+        : {}),
+    };
+    const currentPage = Math.ceil(rank / COMMENT_SWEEP_PAGE_SIZE);
+    const offset = (rank - 1) % COMMENT_SWEEP_PAGE_SIZE;
+    const postsResult = await this.transport.request(
+      "postList",
+      {
+        currentPage,
+        pageSize: COMMENT_SWEEP_PAGE_SIZE,
+        userpageType: 0,
+        stickyOrder: false,
+      },
+      context,
+    );
+    const rawPosts = arrayAt(postsResult.data, ["list", "postList"], "postList");
+    // A feed shorter than the rank — including an empty page — ends the pass. The fast lane owns
+    // the observation marker and stays the honest judge of a suspicious empty first page.
+    const target = normalizeCommentPosts(rawPosts)[offset];
+    if (!target) {
+      session.cookieJar = serializeJar(jar);
+      return { items: [], wrapped: true };
+    }
+    const commentResult = await this.transport.request(
+      "commentList",
+      {
+        lastBuff: "",
+        exportId: target.exportId,
+        commentSelection: false,
+        forMcn: false,
+      },
+      context,
+    );
+    const comments = arrayAt(commentResult.data, ["comment", "comments", "list"], "commentList");
+    const items: NormalizedInboundItem[] = [];
+    for (const rawComment of comments) {
+      items.push(...normalizeCommentTree(
+        rawComment,
+        session.finderUsername,
+        target.objectId,
+        target.exportId,
+      ));
+    }
+    session.cookieJar = serializeJar(jar);
+    return { items, wrapped: false };
   }
 
   async sendReply(

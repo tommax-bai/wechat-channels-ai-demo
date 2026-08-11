@@ -155,6 +155,27 @@ describe("multi-user demo flow", () => {
     expect(gateway.sends).toHaveLength(1);
   });
 
+  it("gates swept old-post comments by the login anchor", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    // The sweep's first step visits rank 4 right after the baseline completes. A pre-login comment
+    // found there is backlog; one that postdates the login performed in this same tick is news.
+    gateway.sweepItems.set(4, [
+      fakeComment("swept-pre-login", "扫到的登录前评论", Date.now() - 120_000),
+      fakeComment("swept-post-login", "扫到的登录后评论", Date.now() + 5_000),
+    ]);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+
+    expect(gateway.sweepCalls).toEqual([4]);
+    const timeline = (await snapshot(server, visitor.cookie)).timeline;
+    expect(timeline.find((item) => item.text === "扫到的登录前评论"))
+      .toMatchObject({ historical: true, replyState: null });
+    expect(timeline.find((item) => item.text === "扫到的登录后评论"))
+      .toMatchObject({ historical: false, replyState: "confirmed" });
+    expect(gateway.sends).toHaveLength(1);
+  });
+
   it("re-anchors on a fresh scan so logged-out-gap messages stay historical", async () => {
     const server = requireApp(app);
     // Pin the platform account so the re-scan below reconnects the same identity.

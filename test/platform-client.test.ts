@@ -170,6 +170,74 @@ describe("PrivateWechatGateway parsers", () => {
     expect(page.hasMore).toBe(false);
   });
 
+  it("sweeps exactly one located post per step and wraps when the feed ends first", async () => {
+    const postBodies: Array<Record<string, unknown>> = [];
+    const commentBodies: Array<Record<string, unknown>> = [];
+    let feedPageLength = 10;
+    const gateway = new PrivateWechatGateway(new WechatTransport({
+      baseUrl: "https://channels.weixin.qq.com",
+      timeoutMs: 1_000,
+      maxResponseBytes: 100_000,
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.includes("/post/post_list")) {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          postBodies.push(body);
+          return response({
+            errCode: 0,
+            data: {
+              list: Array.from({ length: feedPageLength }, (_, index) => ({
+                objectId: `object-p${String(body.currentPage)}-${index + 1}`,
+                exportId: `export-p${String(body.currentPage)}-${index + 1}`,
+              })),
+            },
+          });
+        }
+        if (url.includes("/comment/comment_list")) {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          commentBodies.push(body);
+          return response({
+            errCode: 0,
+            data: {
+              comment: [commentRecord({
+                commentId: `comment-${String(body.exportId)}`,
+                commentContent: `来自 ${String(body.exportId)}`,
+              })],
+            },
+          });
+        }
+        throw new Error(`unexpected ${url}`);
+      },
+    }));
+
+    // Rank 17 lives on page 2 at offset 6: one locating read, one comment read for that post only.
+    const step = await gateway.sweepComments(fakePlatformSession(), 17);
+    expect(postBodies).toHaveLength(1);
+    expect(postBodies[0]).toMatchObject({
+      currentPage: 2,
+      pageSize: 10,
+      userpageType: 0,
+      stickyOrder: false,
+    });
+    expect(commentBodies).toHaveLength(1);
+    expect(commentBodies[0]).toMatchObject({ exportId: "export-p2-7", lastBuff: "" });
+    expect(step.wrapped).toBe(false);
+    expect(step.items.map((item) => item.externalId))
+      .toEqual(["object-p2-7:comment-export-p2-7"]);
+
+    // Rank 94 needs offset 3 of page 10, but the feed ends after 3 posts there: wrap, no comment read.
+    feedPageLength = 3;
+    const shortFeed = await gateway.sweepComments(fakePlatformSession(), 94);
+    expect(shortFeed).toEqual({ items: [], wrapped: true });
+    expect(commentBodies).toHaveLength(1);
+
+    // An empty page wraps quietly; the fast lane owns empty-list suspicion.
+    feedPageLength = 0;
+    const empty = await gateway.sweepComments(fakePlatformSession(), 4);
+    expect(empty).toEqual({ items: [], wrapped: true });
+    expect(commentBodies).toHaveLength(1);
+  });
+
   it("keeps repeated bounded reads on the same stable comment identity", async () => {
     let postRequests = 0;
     const commentLastBuffs: unknown[] = [];

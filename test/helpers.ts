@@ -15,6 +15,7 @@ import type {
   ReplyTarget,
 } from "../src/types.js";
 import type {
+  CommentSweepResult,
   LoginPollResult,
   PendingWechatLogin,
   WechatGateway,
@@ -91,6 +92,13 @@ export class FakeWechatGateway implements WechatGateway {
   readonly newItems = new Map<string, NormalizedInboundItem[]>();
   readonly newComments = new Map<string, NormalizedInboundItem[]>();
   readonly baselineExtraItems: NormalizedInboundItem[] = [];
+  /** Ranks the sweep visited, in order. */
+  readonly sweepCalls: number[] = [];
+  /** Items served per swept rank; ranks without an entry return an empty non-wrapped step. */
+  readonly sweepItems = new Map<number, NormalizedInboundItem[]>();
+  /** Ranks the fake reports as beyond the end of the feed. */
+  readonly sweepWrappedRanks = new Set<number>();
+  sweepError: WechatApiError | null = null;
   readonly commentCursors: Array<string | null> = [];
   accountName: string | null = null;
   captureRequired = false;
@@ -210,6 +218,15 @@ export class FakeWechatGateway implements WechatGateway {
     const items = this.newComments.get(session.finderUsername) ?? [];
     this.newComments.set(session.finderUsername, []);
     return { items, cursor: `comment-cursor-${Date.now()}`, hasMore: false };
+  }
+
+  async sweepComments(session: PlatformSession, rank: number): Promise<CommentSweepResult> {
+    this.sweepCalls.push(rank);
+    if (this.sweepError) throw this.sweepError;
+    if (this.sweepWrappedRanks.has(rank)) return { items: [], wrapped: true };
+    const items = this.sweepItems.get(rank) ?? [];
+    this.sweepItems.delete(rank);
+    return { items, wrapped: false };
   }
 
   async sendReply(
