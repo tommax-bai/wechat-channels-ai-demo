@@ -520,6 +520,8 @@ footer {
   backdrop-filter: blur(14px);
 }
 
+.ops-login[hidden] { display: none; }
+
 .ops-login-card {
   display: grid;
   width: min(380px, 100%);

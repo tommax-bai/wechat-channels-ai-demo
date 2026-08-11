@@ -74,6 +74,8 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
       || request.url.startsWith("/partner/v1")
       || request.url === "/"
       || request.url.startsWith("/connect")
+      || request.url.endsWith(".js")
+      || request.url.endsWith(".css")
     ) {
       reply.header("Cache-Control", "no-store");
       reply.header("X-Content-Type-Options", "nosniff");
