@@ -205,7 +205,12 @@ describe("cookie-bound connect page", () => {
   it("preserves a retained CHAT account until explicit save and lists it once on the dashboard", async () => {
     const server = requireApp(app);
     gateway.accountName = "finder-existing-chat";
-    const owner = await server.inject({ method: "GET", url: "/api/session" });
+    const owner = await server.inject({
+      method: "POST",
+      url: "/api/sessions/new",
+      headers: { origin: "http://localhost:4310" },
+      payload: {},
+    });
     const ownerCookie = responseCookie(
       owner.headers["set-cookie"],
       "wechat_demo_session",

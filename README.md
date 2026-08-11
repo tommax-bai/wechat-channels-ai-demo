@@ -1,24 +1,26 @@
 # WeChat Channels AI Demo
 
-一个完全独立的多用户视频号 AI 自动回复 Demo：
+一个完全独立、面向内部运营人员的多账号视频号 AI 自动回复后台：
 
 - 不依赖 AIDCP Edge、Cloud、Console、数据库或业务策略；
 - 不启动 Chrome、AdsPower、Electron 或其他浏览器内核；
-- 客户打开网页后，通过纯 HTTP 视频号二维码登录；
+- 运营人员使用共享口令登录后台，集中查看并管理全部已接入账号；
+- 在后台内通过纯 HTTP 视频号二维码登录新账号；
 - 历史私信和评论只展示并建立基线；
 - 基线完成后，新收到的文本私信、顶层评论和二级评论按账号选择的 `CHAT回复` 或 `招聘接口` 生成并直接回复；
-- 每个访客使用独立的服务端租户会话。
+- 面向外部的 `/connect` 扫码页和 `/partner/v1` 合作方 API 保持独立入口，不经过运营登录。
 
-> 视频号助手端点是私有、未文档化接口。本仓库是技术 Demo，不是微信官方 SDK，也不能在完成真实账号逐项验收与合规评估前视为生产集成。
+> 视频号助手端点是私有、未文档化接口。本仓库是内部运营工具，不是微信官方 SDK，也不能在完成真实账号逐项验收与合规评估前视为生产集成。
 
 ## Architecture
 
 ```text
-Customer browser
+Operator browser
     │  HTTPS + HttpOnly cookie + SSE
     ▼
 Single Fastify service
-    ├─ isolated demo sessions
+    ├─ shared ops password gate
+    ├─ shared account pool
     ├─ browserless QR login worker
     ├─ WeChat private-API adapter
     ├─ DM/comment baseline and incremental poller
@@ -26,7 +28,7 @@ Single Fastify service
     └─ SQLite WAL
 ```
 
-每个浏览器 Cookie 是 256 位随机值，SQLite 只保存其 SHA-256。视频号 CookieJar、身份、私信游标、消息正文、目标信息和模型回复使用 AES-256-GCM 字段级加密，AAD 绑定当前租户和记录用途。同一视频号身份只能绑定一个保留中的 Demo 会话。认证完成后，服务不会按本地时钟强制结束登录态；只有主动退出或视频号接口明确返回登录失效才要求重新扫码。
+配置 `OPS_PASSWORD` 后，后台页面及其 `/api` 接口需要先提交共享口令；`/connect` 扫码页和 `/partner/v1` 不受运营登录影响。每个浏览器 Cookie 是 256 位随机值，SQLite 只保存其 SHA-256。视频号 CookieJar、身份、私信游标、消息正文、目标信息和模型回复使用 AES-256-GCM 字段级加密，AAD 绑定当前账号和记录用途。同一视频号身份只能绑定一个保留中的账号会话。认证完成后，服务不会按本地时钟强制结束登录态；只有主动退出或视频号接口明确返回登录失效才要求重新扫码。
 
 ## Local run
 
@@ -40,6 +42,7 @@ Requirements:
 cp .env.example .env
 openssl rand -base64 32
 # Put the generated value in SESSION_ENCRYPTION_KEY.
+# Set OPS_PASSWORD to require an operator login on the console.
 # Put the Ark key in ARK_API_KEY. Configure FUNNEL_BASE_URL only on the
 # allowlisted DEV backend when the recruitment reply provider is required.
 npm ci
@@ -56,11 +59,12 @@ If `ARK_API_KEY` is empty, QR login and read-only UI can still run, but accounts
 | Variable | Purpose | Default |
 |---|---|---|
 | `SESSION_ENCRYPTION_KEY` | Base64 or 64-hex 32-byte AES key | required |
+| `OPS_PASSWORD` | Shared operator login password for the console; minimum 8 characters | empty (console open) |
 | `SESSION_COOKIE_SECURE` | Require HTTPS for the browser session cookie | production: `1`, otherwise `0` |
 | `SESSION_COOKIE_MAX_AGE_SECONDS` | Opaque browser selector cookie lifetime; does not control platform login | `365d` |
 | `DATABASE_PATH` | Isolated SQLite database | `./data/demo.sqlite` |
 | `PENDING_SESSION_TTL_MS` | Cleanup deadline for abandoned, unauthenticated Demo sessions | `24h` |
-| `MAX_ACTIVE_SESSIONS` | Concurrent retained visitor/account cap | `100` |
+| `MAX_ACTIVE_SESSIONS` | Concurrent retained account cap | `100` |
 | `WORKER_CONCURRENCY` | Cross-tenant auth, sync, and reply concurrency cap | `4` |
 | `WECHAT_BASE_URL` | WeChat Channels origin or a test double | official origin |
 | `DEMO_AUTO_REPLY_ENABLED` | Service-wide new-job switch | `1` |
@@ -74,6 +78,12 @@ If `ARK_API_KEY` is empty, QR login and read-only UI can still run, but accounts
 Secrets and message bodies are never included in startup summaries or request-error logs.
 
 ## Behavior
+
+### Console access
+
+- With `OPS_PASSWORD` configured, every console API returns `401 ops_auth_required` until the browser submits the shared password to `POST /api/ops/login`; the page shows a login overlay in that state.
+- Without `OPS_PASSWORD`, the console is open; use this only on a private network.
+- Opening the page never creates an account session; sessions are created only by an explicit "添加视频号" action or through the connect/partner flows.
 
 ### Authentication
 
@@ -92,7 +102,7 @@ Authenticated sessions remain encrypted on the server across page closure and se
 - Historical content never creates reply jobs.
 - One source can remain visibly unavailable while the other source operates.
 - A stable platform event ID is required for deduplication.
-- New items received while the customer has stopped automation are displayed but do not create delayed reply jobs.
+- New items received while the operator has stopped automation are displayed but do not create delayed reply jobs.
 
 ### Reply outcomes
 
@@ -110,29 +120,33 @@ Authenticated sessions remain encrypted on the server across page closure and se
 - `submitted_unknown` is never automatically resent.
 - A stop/resume/logout generation is checked again before sending.
 - Logout prevents a request that has not reached the dispatch boundary; it cannot revoke a request already submitted to WeChat.
-- Platform I/O is serialized per demo session so concurrent sync and send requests cannot overwrite each other's refreshed cookies; different visitors still progress concurrently.
-- QR refresh and logout return `409 platform_send_in_flight` while an already-dispatched send outcome is being persisted. The visitor can retry immediately after it reaches a terminal state.
+- Platform I/O is serialized per account session so concurrent sync and send requests cannot overwrite each other's refreshed cookies; different accounts still progress concurrently.
+- QR refresh and account removal return `409 platform_send_in_flight` while an already-dispatched send outcome is being persisted. The operator can retry immediately after it reaches a terminal state.
 
 ## HTTP routes
 
 | Route | Purpose |
 |---|---|
-| `GET /` | Demo page |
+| `GET /` | Ops console page |
 | `GET /healthz` | Process health |
 | `GET /readyz` | Safe configuration readiness |
-| `GET /api/session` | Create/read owning visitor session |
+| `POST /api/ops/login` | Exchange the shared ops password for the console cookie |
+| `GET /api/sessions` | List retained accounts and the current selection |
+| `POST /api/sessions/new` | Create an account session for a fresh QR login |
+| `GET /api/session` | Read the selected account session |
 | `POST /api/session/login` | Request or refresh QR login |
 | `POST /api/session/automation` | Stop/resume new automatic replies |
 | `GET /api/events` | Authenticated SSE state notifications |
-| `DELETE /api/session` | Delete credentials, content and tenant scope |
+| `DELETE /api/session` | Remove the account: delete credentials, content and session scope |
 | `/partner/v1/*` | Bearer-authenticated backend integration API; see [Partner API](docs/partner-api.md) |
 
 Account, Finder, message and reply-target IDs are never accepted from the browser.
 
 ## Security and product limits
 
-- This is a single-instance technical Demo, not a horizontally scaled production service.
-- One process serves multiple isolated visitors with bounded cross-tenant worker concurrency; it is not a high-volume queue.
+- This is a single-instance internal ops console, not a horizontally scaled production service.
+- One process hosts a shared account pool with bounded per-account worker concurrency; it is not a high-volume queue.
+- Console access is a single shared password without per-operator identity, roles, or audit trails; run it on a private network.
 - WeChat private endpoints and response shapes can change without notice; each source fails closed on unknown required fields.
 - New inbound text and generated replies are sent to the account-selected CHAT or recruitment provider. The operator must disclose and approve that data flow.
 - The recruitment provider is called only by the backend; the browser never receives its host and cannot bypass the DEV source-IP allowlist.
@@ -150,7 +164,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Public deployment requires HTTPS and a unique encryption key. Do not copy a development SQLite file or encryption key into a customer-facing deployment.
+Public deployment requires HTTPS and a unique encryption key. Do not copy a development SQLite file or encryption key into a shared deployment.
 
 ## Validation
 

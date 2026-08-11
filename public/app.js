@@ -39,6 +39,11 @@ const elements = {
   sessionSwitcher: document.querySelector("#sessionSwitcher"),
   sessionList: document.querySelector("#sessionList"),
   addSessionButton: document.querySelector("#addSessionButton"),
+  opsLogin: document.querySelector("#opsLogin"),
+  opsLoginForm: document.querySelector("#opsLoginForm"),
+  opsPasswordInput: document.querySelector("#opsPasswordInput"),
+  opsLoginButton: document.querySelector("#opsLoginButton"),
+  opsLoginHint: document.querySelector("#opsLoginHint"),
 };
 
 const authLabels = {
@@ -68,6 +73,8 @@ const sourceLabels = {
 };
 
 const errorLabels = {
+  ops_auth_required: "请先登录运营后台",
+  ops_password_invalid: "口令错误，请重试",
   platform_send_in_flight: "发送结果正在确认，请稍后再试",
   funnel_provider_unavailable: "招聘接口未配置",
   funnel_job_number_required: "请填写招聘岗位号",
@@ -95,6 +102,7 @@ function authErrorLabel(code) {
 }
 
 let snapshot = null;
+let opsLocked = false;
 let refreshing = false;
 let eventSource = null;
 let autoStarted = false;
@@ -130,18 +138,54 @@ async function api(path, options = {}) {
   });
   if (response.status === 204) return null;
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `http_${response.status}`);
+  if (!response.ok) {
+    const code = body.error || `http_${response.status}`;
+    if (code === "ops_auth_required") showOpsLogin();
+    throw new Error(code);
+  }
   return body;
 }
 
+function showOpsLogin() {
+  if (opsLocked) return;
+  opsLocked = true;
+  eventSource?.close();
+  eventSource = null;
+  elements.opsLogin.hidden = false;
+  elements.opsPasswordInput.focus();
+}
+
+async function submitOpsLogin(event) {
+  event.preventDefault();
+  const password = elements.opsPasswordInput.value;
+  if (!password) return;
+  setBusy(elements.opsLoginButton, true, "正在验证");
+  try {
+    await api("/api/ops/login", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
+    opsLocked = false;
+    elements.opsLogin.hidden = true;
+    elements.opsPasswordInput.value = "";
+    elements.opsLoginHint.textContent = "";
+    void refresh();
+  } catch (error) {
+    elements.opsLoginHint.textContent = safeLabel(error.message);
+  } finally {
+    setBusy(elements.opsLoginButton, false, "进入后台");
+  }
+}
+
 async function refresh() {
+  if (opsLocked) return;
   if (refreshing || sessionTransitioning) return;
   const generation = sessionGeneration;
   refreshing = true;
   try {
     const nextSharedSessions = await api("/api/sessions");
     if (generation !== sessionGeneration) return;
-    if (nextSharedSessions.selectedSessionId === null && nextSharedSessions.sessions.length > 0) {
+    if (nextSharedSessions.selectedSessionId === null) {
       sharedSessions = nextSharedSessions;
       renderSharedSessions(sharedSessions);
       snapshot = null;
@@ -165,7 +209,7 @@ async function refresh() {
       await startLogin();
     }
   } catch (error) {
-    renderFatal(error.message);
+    if (error.message !== "ops_auth_required") renderFatal(error.message);
   } finally {
     refreshing = false;
   }
@@ -319,12 +363,12 @@ async function logout() {
   if (!logoutArmed) {
     logoutArmed = true;
     elements.logoutButton.classList.add("armed");
-    elements.logoutButton.textContent = "再次点击确认删除";
+    elements.logoutButton.textContent = "再次点击确认移除";
     logoutTimer = window.setTimeout(disarmLogout, 10_000);
     return;
   }
   disarmLogout();
-  setBusy(elements.logoutButton, true, "正在删除");
+  setBusy(elements.logoutButton, true, "正在移除");
   try {
     await api("/api/session", { method: "DELETE" });
     eventSource?.close();
@@ -334,9 +378,9 @@ async function logout() {
     resetWechatQrState();
     await refresh();
   } catch (error) {
-    elements.authHint.textContent = `退出失败：${safeLabel(error.message)}`;
+    elements.authHint.textContent = `移除失败：${safeLabel(error.message)}`;
   } finally {
-    setBusy(elements.logoutButton, false, "退出并删除数据");
+    setBusy(elements.logoutButton, false, "移除账号");
   }
 }
 
@@ -345,11 +389,11 @@ function disarmLogout() {
   if (logoutTimer) window.clearTimeout(logoutTimer);
   logoutTimer = null;
   elements.logoutButton.classList.remove("armed");
-  elements.logoutButton.textContent = "退出并删除数据";
+  elements.logoutButton.textContent = "移除账号";
 }
 
 function connectEvents() {
-  if (eventSource || !snapshot) return;
+  if (opsLocked || eventSource || !snapshot) return;
   if (window.location.hostname.endsWith(".trycloudflare.com")) return;
   eventSource = new EventSource("/api/events");
   const update = () => void refresh();
@@ -792,7 +836,7 @@ function renderSharedSessions(data) {
     button.type = "button";
     button.disabled = selected;
     button.dataset.sessionId = session.sessionId;
-    button.textContent = selected ? "当前账号" : "切换";
+    button.textContent = selected ? "当前账号" : "管理";
     button.addEventListener("click", () => void selectSession(session.sessionId));
     card.append(info, button);
     elements.sessionList.append(card);
@@ -1028,5 +1072,6 @@ elements.logoutButton.addEventListener("click", () => void logout());
 elements.currentSessionTab.addEventListener("click", () => showView("current"));
 elements.sessionSwitcherTab.addEventListener("click", () => showView("sessions"));
 elements.addSessionButton.addEventListener("click", () => void addSession());
+elements.opsLoginForm.addEventListener("submit", (event) => void submitOpsLogin(event));
 window.setInterval(() => void refresh(), 5_000);
 void refresh();

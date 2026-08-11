@@ -507,3 +507,39 @@ footer {
   .wechat-qr-content { grid-template-columns: 1fr; }
   .wechat-qr-preview { min-height: 180px; }
 }
+
+.ops-login {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(23, 33, 28, 0.4);
+  backdrop-filter: blur(14px);
+}
+
+.ops-login-card {
+  display: grid;
+  width: min(380px, 100%);
+  gap: 6px;
+  padding: 30px;
+}
+
+.ops-login-card h2 { margin: 0; }
+.ops-login-card .hint { min-height: 0; margin: 0 0 8px; }
+
+.ops-login-card input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  outline: 0;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.ops-login-card input:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(15, 157, 104, 0.14);
+}

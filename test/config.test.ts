@@ -101,3 +101,31 @@ describe("Partner API configuration", () => {
     })).toThrow();
   });
 });
+
+describe("ops console login configuration", () => {
+  it("keeps the console open when no ops password is configured", () => {
+    const config = loadConfig(baseEnv);
+
+    expect(config.opsPassword).toBeUndefined();
+    expect(safeStartupSummary(config)).toMatchObject({
+      opsLoginConfigured: false,
+    });
+  });
+
+  it("validates the ops password without exposing it in startup output", () => {
+    const fixturePassword = "ops-pass-fixture";
+    const config = loadConfig({
+      ...baseEnv,
+      OPS_PASSWORD: fixturePassword,
+    });
+    const summary = safeStartupSummary(config);
+
+    expect(config.opsPassword).toBe(fixturePassword);
+    expect(summary).toMatchObject({ opsLoginConfigured: true });
+    expect(JSON.stringify(summary)).not.toContain(fixturePassword);
+    expect(() => loadConfig({
+      ...baseEnv,
+      OPS_PASSWORD: "short",
+    })).toThrow();
+  });
+});

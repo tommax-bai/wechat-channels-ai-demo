@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>视频号 AI 客服 Demo</title>
+    <title>视频号运营后台</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
@@ -13,9 +13,9 @@
     <main class="shell">
       <header class="hero">
         <div>
-          <p class="eyebrow">WECHAT CHANNELS · AI REPLY</p>
-          <h1>视频号 AI 客服 Demo</h1>
-          <p class="lead">扫码连接一个视频号，展示私信与评论，并由当前账号选择的回复方式处理登录后新收到的文本内容。</p>
+          <p class="eyebrow">WECHAT CHANNELS · OPS CONSOLE</p>
+          <h1>视频号运营后台</h1>
+          <p class="lead">集中管理已接入的视频号账号：扫码登录新账号，查看私信与评论，并为每个账号配置自动回复方式。</p>
         </div>
         <div class="hero-status">
           <span id="connectionDot" class="status-dot"></span>
@@ -27,22 +27,22 @@
       </header>
 
       <section class="notice" aria-label="使用说明">
-        <strong>技术演示说明</strong>
-        <span>本 Demo 使用视频号助手的非公开接口。扫码后，授权会话会在服务端加密保存；主动退出或平台登录失效后需重新扫码。</span>
+        <strong>内部使用说明</strong>
+        <span>本后台使用视频号助手的非公开接口，仅限内部运营使用。扫码后，授权会话会在服务端加密保存；主动退出或平台登录失效后需重新扫码。</span>
       </section>
 
-      <nav class="view-tabs" role="tablist" aria-label="Demo 视图">
-        <button id="currentSessionTab" class="view-tab active" type="button" role="tab" aria-selected="true">当前会话</button>
-        <button id="sessionSwitcherTab" class="view-tab" type="button" role="tab" aria-selected="false">
-          会话切换
+      <nav class="view-tabs" role="tablist" aria-label="后台视图">
+        <button id="sessionSwitcherTab" class="view-tab active" type="button" role="tab" aria-selected="true">
+          账号列表
           <span id="sharedSessionCount">0</span>
         </button>
+        <button id="currentSessionTab" class="view-tab" type="button" role="tab" aria-selected="false" disabled>账号详情</button>
       </nav>
 
-      <section id="sessionSwitcher" class="panel session-switcher" hidden>
+      <section id="sessionSwitcher" class="panel session-switcher">
         <div class="panel-heading">
           <div>
-            <p class="kicker">SHARED SESSIONS</p>
+            <p class="kicker">ACCOUNTS</p>
             <h2>已登录视频号</h2>
           </div>
           <button id="addSessionButton" class="button primary compact" type="button">添加视频号</button>
@@ -50,7 +50,7 @@
         <div id="sessionList" class="session-list"></div>
       </section>
 
-      <div id="currentSessionView">
+      <div id="currentSessionView" hidden>
       <section class="dashboard">
         <article class="panel login-panel">
           <div class="panel-heading">
@@ -158,7 +158,7 @@
           </div>
           <div class="actions">
             <button id="automationButton" class="button secondary" type="button" disabled>停止自动回复</button>
-            <button id="logoutButton" class="button ghost danger" type="button" disabled>退出并删除数据</button>
+            <button id="logoutButton" class="button ghost danger" type="button" disabled>移除账号</button>
           </div>
         </article>
       </section>
@@ -182,10 +182,21 @@
       </div>
 
       <footer>
-        <span>独立 Demo 服务 · 不连接 AIDCP 运行时</span>
+        <span>视频号运营后台 · 内部使用</span>
         <span id="sessionExpiry"></span>
       </footer>
     </main>
+    <div id="opsLogin" class="ops-login" hidden>
+      <form id="opsLoginForm" class="panel ops-login-card">
+        <p class="kicker">OPS LOGIN</p>
+        <h2>运营后台登录</h2>
+        <p class="hint">请输入运营口令进入后台。</p>
+        <label class="visually-hidden" for="opsPasswordInput">运营口令</label>
+        <input id="opsPasswordInput" type="password" autocomplete="current-password" placeholder="运营口令">
+        <button id="opsLoginButton" class="button primary" type="submit">进入后台</button>
+        <p id="opsLoginHint" class="hint" role="status"></p>
+      </form>
+    </div>
     <script src="/app.js" defer></script>
   </body>
 </html>

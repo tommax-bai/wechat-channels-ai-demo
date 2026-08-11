@@ -295,7 +295,12 @@ describe("Partner API", () => {
 
   it("keeps ordinary browser-created sessions on the existing CHAT defaults", async () => {
     const fixture = await createFixture();
-    const created = await fixture.app.inject({ method: "GET", url: "/api/session" });
+    const created = await fixture.app.inject({
+      method: "POST",
+      url: "/api/sessions/new",
+      headers: { origin: "http://localhost:4310" },
+      payload: {},
+    });
 
     expect(created.statusCode).toBe(200);
     expect(created.json()).toMatchObject({
@@ -458,7 +463,12 @@ describe("Partner API", () => {
 
   it("returns the selected Demo account QR preview only from the same-origin Demo API", async () => {
     const fixture = await createFixture();
-    const firstBootstrap = await fixture.app.inject({ method: "GET", url: "/api/session" });
+    const firstBootstrap = await fixture.app.inject({
+      method: "POST",
+      url: "/api/sessions/new",
+      headers: { origin: "http://localhost:4310" },
+      payload: {},
+    });
     const firstCookie = requireCookie(firstBootstrap.headers["set-cookie"]);
     const firstAccountId = firstBootstrap.json<{ sessionId: string }>().sessionId;
     expect(firstBootstrap.json<{ wechatQr: unknown }>().wechatQr).toEqual({
@@ -467,7 +477,12 @@ describe("Partner API", () => {
       byteLength: null,
       updatedAt: null,
     });
-    const secondBootstrap = await fixture.app.inject({ method: "GET", url: "/api/session" });
+    const secondBootstrap = await fixture.app.inject({
+      method: "POST",
+      url: "/api/sessions/new",
+      headers: { origin: "http://localhost:4310" },
+      payload: {},
+    });
     const secondCookie = requireCookie(secondBootstrap.headers["set-cookie"]);
     const secondAccountId = secondBootstrap.json<{ sessionId: string }>().sessionId;
 

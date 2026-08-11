@@ -38,7 +38,6 @@ import type { StoredCredential } from "./credentials.js";
 export interface BrowserSession {
   token: string;
   row: SessionRow;
-  created: boolean;
 }
 
 export class SessionService {
@@ -48,18 +47,6 @@ export class SessionService {
     private readonly secureStore: SecureStore,
     private readonly wechat: WechatGateway,
   ) {}
-
-  ensureBrowserSession(rawToken: string | undefined, now = Date.now()): BrowserSession {
-    if (rawToken) {
-      const id = digestSessionToken(rawToken);
-      const existing = this.repository.getSession(id);
-      if (existing && isSessionRetained(existing, now) && existing.authState !== "logged_out") {
-        return { token: rawToken, row: existing, created: false };
-      }
-      if (existing) this.repository.deleteSession(id);
-    }
-    return this.createBrowserSession(now);
-  }
 
   createBrowserSession(now = Date.now()): BrowserSession {
     if (this.repository.countRetainedSessions(now) >= this.config.maxActiveSessions) {
@@ -73,7 +60,7 @@ export class SessionService {
       now + this.config.pendingSessionTtlMs,
       this.config.autoReplyEnabled && Boolean(this.config.arkApiKey),
     );
-    return { token, row, created: true };
+    return { token, row };
   }
 
   createPartnerSession(now = Date.now()): SessionRow {

@@ -1456,9 +1456,15 @@ describe("multi-user demo flow", () => {
 });
 
 async function bootstrap(app: FastifyInstance): Promise<{ cookie: string; snapshot: SessionSnapshot }> {
-  const response = await app.inject({ method: "GET", url: "/api/session" });
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/sessions/new",
+    headers: { origin: "http://localhost:4310" },
+    payload: {},
+  });
   const setCookie = response.headers["set-cookie"];
-  const raw = Array.isArray(setCookie) ? setCookie[0] : setCookie;
+  const cookies = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : [];
+  const raw = cookies.find((value) => value.startsWith("wechat_demo_session="));
   if (!raw) throw new Error("missing set-cookie");
   return {
     cookie: raw.split(";", 1)[0] ?? "",

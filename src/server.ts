@@ -1,3 +1,4 @@
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import cookie from "@fastify/cookie";
@@ -41,6 +42,9 @@ const connectReplySettingsBody = z.object({
 }).strict();
 const selectSessionBody = z.object({
   sessionId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+}).strict();
+const opsLoginBody = z.object({
+  password: z.string().min(1).max(256),
 }).strict();
 
 export async function buildServer(deps: ServerDependencies): Promise<FastifyInstance> {
@@ -86,6 +90,33 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
       ].join("; "));
     }
     return payload;
+  });
+
+  // Ops password gate for the console. The customer-facing connect page and the
+  // separately authenticated partner API stay outside it.
+  app.addHook("onRequest", async (request) => {
+    if (!deps.config.opsPassword) return;
+    const path = request.url.split("?", 1)[0] ?? "";
+    if (!path.startsWith("/api/")) return;
+    if (path.startsWith("/api/connect")) return;
+    if (path === "/api/ops/login") return;
+    if (!hasOpsAccess(request, deps.config)) throw new Error("ops_auth_required");
+  });
+
+  app.post("/api/ops/login", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    if (deps.config.opsPassword) {
+      const body = opsLoginBody.parse(request.body);
+      if (!secretMatches(body.password, deps.config.opsPassword)) {
+        throw new Error("ops_password_invalid");
+      }
+      reply.setCookie(
+        opsCookieName(deps.config),
+        opsAccessValue(deps.config),
+        cookieOptions(deps.config),
+      );
+    }
+    return reply.code(204).send();
   });
 
   app.get("/healthz", async () => ({ status: "ok" }));
@@ -152,7 +183,7 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   });
 
   app.get("/api/session", async (request, reply) => {
-    const session = ensureSession(request, reply, deps);
+    const session = requireSession(request, reply, deps);
     return deps.sessions.snapshot(session);
   });
 
@@ -447,26 +478,6 @@ async function connectSnapshot(
   };
 }
 
-function ensureSession(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  deps: ServerDependencies,
-): SessionRow {
-  const selected = resolveRequestSession(request, reply, deps);
-  if (selected) return selected;
-  const browser = deps.sessions.ensureBrowserSession(
-    request.cookies[deps.config.sessionCookieName],
-  );
-  if (browser.created) {
-    reply.setCookie(
-      deps.config.sessionCookieName,
-      browser.token,
-      cookieOptions(deps.config),
-    );
-  }
-  return browser.row;
-}
-
 function requireSession(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -539,6 +550,29 @@ function cookieOptions(config: AppConfig): {
   };
 }
 
+function opsCookieName(config: AppConfig): string {
+  return `${config.sessionCookieName}_ops`;
+}
+
+function opsAccessValue(config: AppConfig): string {
+  return createHmac("sha256", config.encryptionKey)
+    .update(`ops-console:${config.opsPassword ?? ""}`)
+    .digest("base64url");
+}
+
+function hasOpsAccess(request: FastifyRequest, config: AppConfig): boolean {
+  const presented = request.cookies[opsCookieName(config)];
+  return typeof presented === "string"
+    && secretMatches(presented, opsAccessValue(config));
+}
+
+function secretMatches(presented: string, expected: string): boolean {
+  return timingSafeEqual(
+    createHash("sha256").update(presented, "utf8").digest(),
+    createHash("sha256").update(expected, "utf8").digest(),
+  );
+}
+
 function assertSameOrigin(request: FastifyRequest, config: AppConfig): void {
   const origin = request.headers.origin;
   if (!origin) return;
@@ -583,6 +617,8 @@ function isAccountWechatQrPut(request: FastifyRequest): boolean {
 function statusFor(code: string): number {
   if (code === "demo_session_required") return 401;
   if (code === "connect_account_required") return 401;
+  if (code === "ops_auth_required") return 401;
+  if (code === "ops_password_invalid") return 401;
   if (code === "partner_api_unauthorized") return 401;
   if (code === "cross_origin_mutation_rejected") return 403;
   if (
