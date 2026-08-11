@@ -23,3 +23,12 @@
 - [x] 4.1 Cover the locked console, the wrong and correct password exchanges, a forged cookie, the exempt connect/partner surfaces, the open no-password mode, and the read that must not create a session.
 - [x] 4.2 Rebase the test bootstrap helpers onto the explicit create route so existing flows keep their coverage.
 - [x] 4.3 Run lint, typecheck, the complete test suite, build, and `openspec validate reposition-internal-ops-console --strict`.
+
+## 5. DEV Delivery And Live Acceptance
+
+- [x] 5.1 Back up DEV state, install the release, configure the operator password, restart only the demo unit, and verify service and HTTPS health.
+- [x] 5.2 Verify on DEV that the console is locked without the password, opens after the exchange, and that the connect page, the Partner API, and the retained accounts are unaffected.
+
+DEV delivery evidence (2026-08-11): commit `4363a14` was installed as `/opt/wechat-channels-ai-demo/releases/4363a14` using Alibaba Cloud's npm mirror, passing the complete server-side check with 167 tests before activation. The previous release pointer (`releases/4537aff`), the root-owned environment and unit, and a WAL-consistent SQLite backup with `quick_check=ok` are retained at `/opt/wechat-channels-ai-demo/backups/pre-4363a14-20260811T043644Z`. The operator password was added to the root-owned `demo.env` only. Only the demo unit was restarted; it returned `active` with `NRestarts=0`, local health and readiness returned 200, `https://dev.yytt.com.cn/healthz` returned 200, and the `aidcp*` and `isales*` units kept their pre-deploy states.
+
+Live acceptance (2026-08-11): without the ops cookie the console API answered `401 ops_auth_required`; a wrong password answered `401 ops_password_invalid` with no cookie; the correct password returned `204` with a `Secure; HttpOnly; SameSite=Lax` cookie whose value is not the password; with that cookie the account list returned every retained account unchanged (including 星禾2806, still `active` on the recruitment provider). `/connect` still answers 200 and an unauthenticated Partner request still answers its own `partner_api_unauthorized`. The console page serves the repositioned ops title.
