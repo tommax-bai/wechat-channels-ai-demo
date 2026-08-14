@@ -48,6 +48,8 @@ export interface SourceRow {
 
 export interface InboundRow {
   id: string;
+  accountKeyHash: string;
+  /** Container that discovered the item — the envelope's encryption partition, not ownership. */
   sessionId: string;
   source: InboundSource;
   payloadEnvelope: string;
@@ -117,6 +119,7 @@ interface RawSource {
 
 interface RawInbound {
   id: string;
+  account_key_hash: string;
   session_id: string;
   source: InboundSource;
   payload_envelope: string;
@@ -245,11 +248,15 @@ export class DemoRepository {
         throw new Error("platform_send_in_flight");
       }
       const generation = session.authGeneration + 1;
+      // The account binding survives the re-scan on purpose: messages are keyed by account, and
+      // clearing the binding here would let the orphan-history sweep eat the account's ledger in
+      // the window before the new login completes. Completion rebinds (possibly to a different
+      // account, orphaning this one); an abandoned re-scan expires through ordinary cleanup.
       this.db
         .prepare(`
           UPDATE demo_sessions
           SET auth_state = 'qr_pending', auth_generation = ?, run_generation = run_generation + 1,
-              account_key_hash = NULL, platform_persistent = 0, expires_at = ?,
+              platform_persistent = 0, expires_at = ?,
               linked_session_id = NULL, last_error_code = NULL, updated_at = ?
           WHERE id = ?
         `)
@@ -261,7 +268,6 @@ export class DemoRepository {
           VALUES (?, ?, ?)
         `)
         .run(id, credentialEnvelope, now);
-      this.db.prepare("DELETE FROM inbound_items WHERE session_id = ?").run(id);
       this.db
         .prepare(`
           UPDATE source_states
@@ -345,9 +351,11 @@ export class DemoRepository {
    * A fresh scan owns the account: whichever session previously held this Finder identity is
    * retired here, inside the same transaction that completes the new login, so the unique
    * account_key_hash can never block a re-login and no window exists where two sessions both
-   * host one account. The retired row keeps its history until retiredExpiresAt, then leaves
-   * through the ordinary expired-session cleanup; account_key_hash must be cleared or the
-   * startup platform-persistence migration would resurrect it.
+   * host one account. The account's message ledger is keyed by account_key_hash, so it follows
+   * the identity to the successor untouched — the successor's baseline dedups against it instead
+   * of re-answering. The retired row itself leaves through the ordinary expired-session cleanup;
+   * account_key_hash must be cleared or the startup platform-persistence migration would
+   * resurrect it.
    */
   private retireAccountHolder(
     successorId: string,
@@ -715,6 +723,7 @@ export class DemoRepository {
 
   insertInbound(input: {
     id: string;
+    accountKeyHash: string;
     sessionId: string;
     source: InboundSource;
     externalIdHash: string;
@@ -731,10 +740,10 @@ export class DemoRepository {
       const result = this.db
         .prepare(`
           INSERT OR IGNORE INTO inbound_items (
-            id, session_id, source, external_id_hash, payload_envelope, occurred_at,
-            discovered_at, historical, reply_eligible
+            id, account_key_hash, session_id, source, external_id_hash, payload_envelope,
+            occurred_at, discovered_at, historical, reply_eligible
           )
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           WHERE EXISTS (
             SELECT 1 FROM demo_sessions
             WHERE id = ? AND auth_generation = ?
@@ -742,6 +751,7 @@ export class DemoRepository {
         `)
         .run(
           input.id,
+          input.accountKeyHash,
           input.sessionId,
           input.source,
           input.externalIdHash,
@@ -779,39 +789,41 @@ export class DemoRepository {
     })();
   }
 
-  listInbound(id: string, limit = 100): InboundRow[] {
+  listInbound(accountKeyHash: string | null, limit = 100): InboundRow[] {
+    if (!accountKeyHash) return [];
     const rows = this.db
       .prepare(`
-        SELECT id, session_id, source, payload_envelope, occurred_at, discovered_at,
-               historical, reply_eligible
+        SELECT id, account_key_hash, session_id, source, payload_envelope, occurred_at,
+               discovered_at, historical, reply_eligible
         FROM inbound_items
-        WHERE session_id = ?
+        WHERE account_key_hash = ?
         ORDER BY discovered_at DESC
         LIMIT ?
       `)
-      .all(id, limit) as RawInbound[];
+      .all(accountKeyHash, limit) as RawInbound[];
     return rows.map(mapInbound);
   }
 
   listInboundBySource(
-    sessionId: string,
+    accountKeyHash: string | null,
     source: InboundSource,
     limitPlusOne: number,
     cursor?: { discoveredAt: number; id: string },
   ): InboundRow[] {
+    if (!accountKeyHash) return [];
     const rows = cursor
       ? this.db
           .prepare(`
-            SELECT id, session_id, source, payload_envelope, occurred_at, discovered_at,
-                   historical, reply_eligible
+            SELECT id, account_key_hash, session_id, source, payload_envelope, occurred_at,
+                   discovered_at, historical, reply_eligible
             FROM inbound_items
-            WHERE session_id = ? AND source = ?
+            WHERE account_key_hash = ? AND source = ?
               AND ((discovered_at < ?) OR (discovered_at = ? AND id < ?))
             ORDER BY discovered_at DESC, id DESC
             LIMIT ?
           `)
           .all(
-            sessionId,
+            accountKeyHash,
             source,
             cursor.discoveredAt,
             cursor.discoveredAt,
@@ -820,32 +832,33 @@ export class DemoRepository {
           ) as RawInbound[]
       : this.db
           .prepare(`
-            SELECT id, session_id, source, payload_envelope, occurred_at, discovered_at,
-                   historical, reply_eligible
+            SELECT id, account_key_hash, session_id, source, payload_envelope, occurred_at,
+                   discovered_at, historical, reply_eligible
             FROM inbound_items
-            WHERE session_id = ? AND source = ?
+            WHERE account_key_hash = ? AND source = ?
             ORDER BY discovered_at DESC, id DESC
             LIMIT ?
           `)
-          .all(sessionId, source, limitPlusOne) as RawInbound[];
+          .all(accountKeyHash, source, limitPlusOne) as RawInbound[];
     return rows.map(mapInbound);
   }
 
   getInbound(id: string, sessionId: string): InboundRow | null {
     const row = this.db
       .prepare(`
-        SELECT id, session_id, source, payload_envelope, occurred_at, discovered_at,
-               historical, reply_eligible
+        SELECT id, account_key_hash, session_id, source, payload_envelope, occurred_at,
+               discovered_at, historical, reply_eligible
         FROM inbound_items WHERE id = ? AND session_id = ?
       `)
       .get(id, sessionId) as RawInbound | undefined;
     return row ? mapInbound(row) : null;
   }
 
-  getReplyForInbound(inboundId: string, sessionId: string): ReplyRow | null {
+  /** inbound_item_id is unique: one reply ever per message, whichever container produced it. */
+  getReplyForInbound(inboundId: string): ReplyRow | null {
     const row = this.db
-      .prepare("SELECT * FROM reply_jobs WHERE inbound_item_id = ? AND session_id = ?")
-      .get(inboundId, sessionId) as RawReply | undefined;
+      .prepare("SELECT * FROM reply_jobs WHERE inbound_item_id = ?")
+      .get(inboundId) as RawReply | undefined;
     return row ? mapReply(row) : null;
   }
 
@@ -1075,7 +1088,16 @@ export class DemoRepository {
   deleteSession(id: string): boolean {
     return this.db.transaction(() => {
       if (this.hasSendingReply(id)) return false;
-      return this.db.prepare("DELETE FROM demo_sessions WHERE id = ?").run(id).changes > 0;
+      const session = this.getSession(id);
+      const deleted = this.db.prepare("DELETE FROM demo_sessions WHERE id = ?").run(id).changes > 0;
+      // An explicit logout of the account's holder ends the account's stay in the demo, and its
+      // message ledger no longer cascades from any session row — remove it here, not on a timer.
+      if (deleted && session?.accountKeyHash) {
+        this.db
+          .prepare("DELETE FROM inbound_items WHERE account_key_hash = ?")
+          .run(session.accountKeyHash);
+      }
+      return deleted;
     })();
   }
 
@@ -1093,6 +1115,22 @@ export class DemoRepository {
           )
       `)
       .run(now).changes;
+  }
+
+  /**
+   * Messages whose account no longer has any session row lost their last tie to the demo: the
+   * holder rebound to a different account, or an expired mid-relogin holder was cleaned up.
+   * Nothing can display or dedup against them anymore, so keeping them is pure liability.
+   */
+  deleteOrphanAccountHistory(): number {
+    return this.db
+      .prepare(`
+        DELETE FROM inbound_items
+        WHERE account_key_hash NOT IN (
+          SELECT account_key_hash FROM demo_sessions WHERE account_key_hash IS NOT NULL
+        )
+      `)
+      .run().changes;
   }
 
   hasSendingReply(id: string): boolean {
@@ -1169,6 +1207,7 @@ function mapSource(row: RawSource): SourceRow {
 function mapInbound(row: RawInbound): InboundRow {
   return {
     id: row.id,
+    accountKeyHash: row.account_key_hash,
     sessionId: row.session_id,
     source: row.source,
     payloadEnvelope: row.payload_envelope,

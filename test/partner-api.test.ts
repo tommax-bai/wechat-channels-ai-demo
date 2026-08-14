@@ -1231,13 +1231,24 @@ function insertInbound(
 ): { id: string; replyId: string | null } {
   const session = fixture.repository.getSession(accountId);
   if (!session) throw new Error("missing Partner account");
+  if (!session.accountKeyHash) {
+    // Content is keyed by account; a fixture account that never completed a login still needs a
+    // Finder binding before it can own inbound rows.
+    fixture.database
+      .prepare("UPDATE demo_sessions SET account_key_hash = ? WHERE id = ?")
+      .run(fixture.secureStore.keyedHash(`finder-${accountId}`, "finder-account"), accountId);
+    const bound = fixture.repository.getSession(accountId);
+    if (!bound?.accountKeyHash) throw new Error("missing account binding");
+    session.accountKeyHash = bound.accountKeyHash;
+  }
   const result = fixture.repository.insertInbound({
     id,
+    accountKeyHash: session.accountKeyHash,
     sessionId: accountId,
     source: item.source,
     externalIdHash: fixture.secureStore.keyedHash(
       item.externalId,
-      `inbound:${accountId}:${item.source}`,
+      `inbound:acct:${session.accountKeyHash}:${item.source}`,
     ),
     payloadEnvelope: fixture.secureStore.encryptJson(
       item,

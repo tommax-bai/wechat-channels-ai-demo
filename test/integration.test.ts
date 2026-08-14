@@ -959,13 +959,15 @@ describe("multi-user demo flow", () => {
     expect(session.automationEnabled).toBe(true);
     const queuedItem = fakeDm("queued-before-provider-restart", "finder-1", "仍在排队");
     const inboundId = "queued-before-provider-restart-inbound";
+    if (!session.accountKeyHash) throw new Error("missing account binding");
     repository.insertInbound({
       id: inboundId,
+      accountKeyHash: session.accountKeyHash,
       sessionId,
       source: "dm",
       externalIdHash: secureStore.keyedHash(
         queuedItem.externalId,
-        `inbound:${sessionId}:dm`,
+        `inbound:acct:${session.accountKeyHash}:dm`,
       ),
       payloadEnvelope: secureStore.encryptJson(
         queuedItem,
@@ -1111,7 +1113,11 @@ describe("multi-user demo flow", () => {
     const refreshed = await snapshot(server, visitor.cookie);
     expect(refreshed.authState).toBe("qr_pending");
     expect(refreshed.qrDataUrl).toMatch(/^data:image\/png;base64,/);
-    expect(refreshed.timeline).toHaveLength(0);
+    // The account's ledger survives the re-scan; only the superseded generation's in-flight
+    // write is rejected.
+    const texts = refreshed.timeline.map((item) => item.text);
+    expect(texts).not.toContain("旧账号在途消息");
+    expect(texts).toContain("历史消息");
   });
 
   it("rechecks stop authority immediately before platform dispatch", async () => {
@@ -1157,11 +1163,16 @@ describe("multi-user demo flow", () => {
     if (!session) throw new Error("missing test session");
     const item = fakeDm("cookie-race", "finder-1", "并发 Cookie 测试");
     const inboundId = "cookie-race-inbound";
+    if (!session.accountKeyHash) throw new Error("missing account binding");
     repository.insertInbound({
       id: inboundId,
+      accountKeyHash: session.accountKeyHash,
       sessionId,
       source: "dm",
-      externalIdHash: secureStore.keyedHash(item.externalId, `inbound:${sessionId}:dm`),
+      externalIdHash: secureStore.keyedHash(
+        item.externalId,
+        `inbound:acct:${session.accountKeyHash}:dm`,
+      ),
       payloadEnvelope: secureStore.encryptJson(item, sessionId, `inbound:${inboundId}`),
       occurredAt: item.occurredAt,
       discoveredAt: Date.now(),
@@ -1276,13 +1287,15 @@ describe("multi-user demo flow", () => {
     if (!session) throw new Error("missing test session");
     const retained = fakeComment("retained-before-recovery", "已经保留的评论");
     const retainedInboundId = "retained-before-recovery-inbound";
+    if (!session.accountKeyHash) throw new Error("missing account binding");
     repository.insertInbound({
       id: retainedInboundId,
+      accountKeyHash: session.accountKeyHash,
       sessionId,
       source: "comment",
       externalIdHash: secureStore.keyedHash(
         retained.externalId,
-        `inbound:${sessionId}:comment`,
+        `inbound:acct:${session.accountKeyHash}:comment`,
       ),
       payloadEnvelope: secureStore.encryptJson(
         retained,

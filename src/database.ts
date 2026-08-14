@@ -68,7 +68,8 @@ export function openDatabase(path: string): SqliteDatabase {
 
     CREATE TABLE IF NOT EXISTS inbound_items (
       id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL REFERENCES demo_sessions(id) ON DELETE CASCADE,
+      account_key_hash TEXT NOT NULL,
+      session_id TEXT NOT NULL,
       source TEXT NOT NULL CHECK (source IN ('dm', 'comment')),
       external_id_hash TEXT NOT NULL,
       payload_envelope TEXT NOT NULL,
@@ -76,18 +77,12 @@ export function openDatabase(path: string): SqliteDatabase {
       discovered_at INTEGER NOT NULL,
       historical INTEGER NOT NULL CHECK (historical IN (0, 1)),
       reply_eligible INTEGER NOT NULL CHECK (reply_eligible IN (0, 1)),
-      UNIQUE (session_id, source, external_id_hash)
+      UNIQUE (account_key_hash, source, external_id_hash)
     );
-
-    CREATE INDEX IF NOT EXISTS idx_inbound_session_time
-      ON inbound_items(session_id, discovered_at DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_inbound_session_source_time_id
-      ON inbound_items(session_id, source, discovered_at DESC, id DESC);
 
     CREATE TABLE IF NOT EXISTS reply_jobs (
       id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL REFERENCES demo_sessions(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL,
       inbound_item_id TEXT NOT NULL UNIQUE REFERENCES inbound_items(id) ON DELETE CASCADE,
       state TEXT NOT NULL,
       output_envelope TEXT,
@@ -170,6 +165,15 @@ export function openDatabase(path: string): SqliteDatabase {
   if (!sourceColumns.some((column) => column.name === "sweep_attempt_at")) {
     db.exec("ALTER TABLE source_states ADD COLUMN sweep_attempt_at INTEGER");
   }
+  migrateInboundToAccountDimension(db);
+  // Created after the rebuild migration: on a legacy database the columns only exist once the
+  // inbound table has been re-keyed to the account dimension.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_inbound_account_time
+      ON inbound_items(account_key_hash, discovered_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_inbound_account_source_time_id
+      ON inbound_items(account_key_hash, source, discovered_at DESC, id DESC);
+  `);
   db.exec(`
     UPDATE source_states
     SET last_attempt_at = updated_at
@@ -192,5 +196,156 @@ export function openDatabase(path: string): SqliteDatabase {
         'auth_required', 'schema_changed'
       )
   `).run(ROLLBACK_SAFE_PLATFORM_EXPIRY_MS);
+  if ((db.pragma("user_version", { simple: true }) as number) === 0) {
+    db.pragma(`user_version = ${INBOUND_ACCOUNT_HASHES_READY}`);
+  }
   return db;
+}
+
+/** user_version marks how far the inbound account-dimension migration has run. */
+const INBOUND_ACCOUNT_ROWS_REBUILT = 1;
+const INBOUND_ACCOUNT_HASHES_READY = 2;
+
+/**
+ * Messages belong to the WeChat account, not to the container that happened to discover them, so
+ * the rebuilt table keys rows by account_key_hash and drops the session cascade: history must
+ * survive the container being retired and cleaned up. Rows whose session no longer holds an
+ * account are copies the account's current holder also carries (or leftovers of a disconnected
+ * account) and are dropped rather than left unattributable. Dedup hashes still live in the old
+ * per-session namespace after this rebuild — completeInboundAccountMigration must run before any
+ * sync worker polls, or the first overlap read would double-insert everything.
+ */
+function migrateInboundToAccountDimension(db: SqliteDatabase): void {
+  const inboundColumns = db.pragma("table_info(inbound_items)") as Array<{ name: string }>;
+  if (inboundColumns.some((column) => column.name === "account_key_hash")) return;
+  db.pragma("foreign_keys = OFF");
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE inbound_items_account (
+        id TEXT PRIMARY KEY,
+        account_key_hash TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        source TEXT NOT NULL CHECK (source IN ('dm', 'comment')),
+        external_id_hash TEXT NOT NULL,
+        payload_envelope TEXT NOT NULL,
+        occurred_at INTEGER NOT NULL,
+        discovered_at INTEGER NOT NULL,
+        historical INTEGER NOT NULL CHECK (historical IN (0, 1)),
+        reply_eligible INTEGER NOT NULL CHECK (reply_eligible IN (0, 1)),
+        UNIQUE (account_key_hash, source, external_id_hash)
+      );
+      INSERT INTO inbound_items_account (
+        id, account_key_hash, session_id, source, external_id_hash, payload_envelope,
+        occurred_at, discovered_at, historical, reply_eligible
+      )
+      SELECT i.id, s.account_key_hash, i.session_id, i.source, i.external_id_hash,
+             i.payload_envelope, i.occurred_at, i.discovered_at, i.historical, i.reply_eligible
+      FROM inbound_items i
+      JOIN demo_sessions s ON s.id = i.session_id
+      WHERE s.account_key_hash IS NOT NULL;
+      DROP TABLE inbound_items;
+      ALTER TABLE inbound_items_account RENAME TO inbound_items;
+      CREATE TABLE reply_jobs_account (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        inbound_item_id TEXT NOT NULL UNIQUE REFERENCES inbound_items(id) ON DELETE CASCADE,
+        state TEXT NOT NULL,
+        output_envelope TEXT,
+        model TEXT,
+        provider_request_id TEXT,
+        platform_receipt_hash TEXT,
+        platform_client_id TEXT NOT NULL UNIQUE,
+        run_generation INTEGER NOT NULL,
+        error_code TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO reply_jobs_account (
+        id, session_id, inbound_item_id, state, output_envelope, model, provider_request_id,
+        platform_receipt_hash, platform_client_id, run_generation, error_code, created_at,
+        updated_at
+      )
+      SELECT r.id, r.session_id, r.inbound_item_id, r.state, r.output_envelope, r.model,
+             r.provider_request_id, r.platform_receipt_hash, r.platform_client_id,
+             r.run_generation, r.error_code, r.created_at, r.updated_at
+      FROM reply_jobs r
+      WHERE EXISTS (SELECT 1 FROM inbound_items i WHERE i.id = r.inbound_item_id);
+      DROP TABLE reply_jobs;
+      ALTER TABLE reply_jobs_account RENAME TO reply_jobs;
+      CREATE INDEX idx_reply_jobs_claim ON reply_jobs(state, created_at);
+    `);
+    db.pragma(`user_version = ${INBOUND_ACCOUNT_ROWS_REBUILT}`);
+  })();
+  db.pragma("foreign_keys = ON");
+}
+
+/**
+ * Second half of the account-dimension migration, split out because it needs the encryption key:
+ * legacy dedup hashes were keyed by the discovering session, so the same platform message would
+ * not match them once inserts hash in the account namespace. Every carried-over row is re-keyed
+ * from its decrypted payload's externalId; a row that cannot be decrypted or re-keyed without
+ * colliding is dropped, because an unmatchable dedup entry is worse than a missing display row.
+ * Must run at startup before the sync workers poll.
+ */
+export function completeInboundAccountMigration(
+  db: SqliteDatabase,
+  secureStore: {
+    decryptJson<T>(raw: string, sessionId: string, purpose: string): T;
+    keyedHash(value: string, namespace: string): string;
+  },
+): { rehashed: number; dropped: number } {
+  if ((db.pragma("user_version", { simple: true }) as number) >= INBOUND_ACCOUNT_HASHES_READY) {
+    return { rehashed: 0, dropped: 0 };
+  }
+  let rehashed = 0;
+  let dropped = 0;
+  db.transaction(() => {
+    const rows = db
+      .prepare(`
+        SELECT id, account_key_hash, session_id, source, external_id_hash, payload_envelope
+        FROM inbound_items
+      `)
+      .all() as Array<{
+        id: string;
+        account_key_hash: string;
+        session_id: string;
+        source: string;
+        external_id_hash: string;
+        payload_envelope: string;
+      }>;
+    const remove = db.prepare("DELETE FROM inbound_items WHERE id = ?");
+    const update = db.prepare("UPDATE inbound_items SET external_id_hash = ? WHERE id = ?");
+    for (const row of rows) {
+      let externalId: string;
+      try {
+        const item = secureStore.decryptJson<{ externalId?: unknown }>(
+          row.payload_envelope,
+          row.session_id,
+          `inbound:${row.id}`,
+        );
+        if (typeof item.externalId !== "string" || item.externalId.length === 0) {
+          throw new Error("payload_missing_external_id");
+        }
+        externalId = item.externalId;
+      } catch {
+        remove.run(row.id);
+        dropped += 1;
+        continue;
+      }
+      const expected = secureStore.keyedHash(
+        externalId,
+        `inbound:acct:${row.account_key_hash}:${row.source}`,
+      );
+      if (expected === row.external_id_hash) continue;
+      try {
+        update.run(expected, row.id);
+        rehashed += 1;
+      } catch {
+        remove.run(row.id);
+        dropped += 1;
+      }
+    }
+    db.pragma(`user_version = ${INBOUND_ACCOUNT_HASHES_READY}`);
+  })();
+  return { rehashed, dropped };
 }

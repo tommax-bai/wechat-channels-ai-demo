@@ -647,6 +647,10 @@ export class WorkerCoordinator {
   }
 
   private persistPage(session: SessionRow, page: WechatSyncPage): void {
+    const accountKeyHash = session.accountKeyHash;
+    // Only authenticated lanes sync, so a missing binding means the session was retired or
+    // rebound mid-page; dropping the page is safe because the next holder re-reads the overlap.
+    if (!accountKeyHash) return;
     const now = Date.now();
     for (const item of page.items) {
       const id = randomUUID();
@@ -668,11 +672,15 @@ export class WorkerCoordinator {
         && (session.authState === "active" || session.authState === "baseline_sync");
       this.repository.insertInbound({
         id,
+        accountKeyHash,
         sessionId: session.id,
         source: item.source,
+        // Keyed by account, not by session: the same platform message must dedup against what
+        // any earlier container of this account already stored, or a container change would
+        // answer the whole overlap again.
         externalIdHash: this.secureStore.keyedHash(
           item.externalId,
-          `inbound:${session.id}:${item.source}`,
+          `inbound:acct:${accountKeyHash}:${item.source}`,
         ),
         payloadEnvelope: this.secureStore.encryptJson(
           item,
@@ -1002,6 +1010,10 @@ export class WorkerCoordinator {
     try {
       const count = this.repository.deleteExpired(Date.now());
       if (count > 0) this.log.info(`[demo] expired transient sessions removed count=${count}`);
+      const orphaned = this.repository.deleteOrphanAccountHistory();
+      if (orphaned > 0) {
+        this.log.info(`[demo] orphaned account history removed count=${orphaned}`);
+      }
     } finally {
       this.cleanupRunning = false;
     }

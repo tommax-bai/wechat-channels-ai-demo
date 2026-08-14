@@ -633,6 +633,7 @@ describe("WorkerCoordinator re-login takeover", () => {
     if (!configured) throw new Error("missing configured old container");
     const inserted = repository.insertInbound({
       id: "inbound-queued",
+      accountKeyHash: oldRow.accountKeyHash,
       sessionId: "container-old",
       source: "dm",
       externalIdHash: "hash-queued",
@@ -665,7 +666,7 @@ describe("WorkerCoordinator re-login takeover", () => {
     if (!retired) throw new Error("missing retired container");
     expect(retired.expiresAt).toBeLessThanOrEqual(Date.now() + config.pendingSessionTtlMs);
     expect(repository.getCredentialEnvelope("container-old")).toBeNull();
-    expect(repository.getReplyForInbound("inbound-queued", "container-old")).toMatchObject({
+    expect(repository.getReplyForInbound("inbound-queued")).toMatchObject({
       state: "failed",
       errorCode: "account_superseded",
     });
@@ -700,6 +701,118 @@ describe("WorkerCoordinator re-login takeover", () => {
     expect(
       Buffer.from(parseStoredAccountWechatQr(carriedStored).bytes).equals(qr.bytes),
     ).toBe(true);
+  });
+
+  it("carries the account ledger across a takeover and never answers the overlap again", async () => {
+    const config = testConfig();
+    database = openDatabase(":memory:");
+    const repository = new DemoRepository(database);
+    const secureStore = new SecureStore(config.encryptionKey);
+    const gateway = new FakeWechatGateway();
+    gateway.accountName = "finder-ledger";
+    const workers = createWorkers(config, repository, secureStore, gateway);
+
+    await beginLogin(repository, secureStore, gateway, config, "container-old");
+    await workers.runOnce();
+    const oldRow = repository.getSession("container-old");
+    if (!oldRow?.accountKeyHash) throw new Error("old container did not authenticate");
+    const accountKeyHash = oldRow.accountKeyHash;
+
+    const crossItem = fakeDm("cross-container-dm", "finder-ledger", "跨容器消息");
+    gateway.newItems.set("finder-ledger", [crossItem]);
+    for (let round = 0; round < 3; round += 1) await workers.runOnce();
+    expect(gateway.sends).toHaveLength(1);
+    const answered = repository
+      .listInbound(accountKeyHash)
+      .filter((row) => row.sessionId === "container-old");
+    expect(answered.length).toBeGreaterThanOrEqual(2);
+
+    await beginLogin(repository, secureStore, gateway, config, "container-new");
+    await workers.runOnce();
+    const successor = repository.getSession("container-new");
+    expect(successor?.accountKeyHash).toBe(accountKeyHash);
+
+    // The platform re-offers the already-answered message to the new container.
+    gateway.newItems.set("finder-ledger", [crossItem]);
+    for (let round = 0; round < 3; round += 1) await workers.runOnce();
+
+    expect(gateway.sends).toHaveLength(1);
+    const copies = database
+      .prepare("SELECT COUNT(*) AS count FROM inbound_items WHERE external_id_hash = ?")
+      .get(secureStore.keyedHash(
+        crossItem.externalId,
+        `inbound:acct:${accountKeyHash}:dm`,
+      )) as { count: number };
+    expect(copies.count).toBe(1);
+    // The successor's feed still shows the predecessor's row with its reply record.
+    const answeredRow = answered.find((row) => !row.historical);
+    if (!answeredRow) throw new Error("missing answered inbound row");
+    const ledger = repository.listInbound(accountKeyHash);
+    expect(ledger.map((row) => row.id)).toContain(answeredRow.id);
+    expect(repository.getReplyForInbound(answeredRow.id)).toMatchObject({
+      state: "confirmed",
+      sessionId: "container-old",
+    });
+  });
+
+  it("orphans and sweeps the previous account's history when a container rebinds", async () => {
+    const config = testConfig();
+    database = openDatabase(":memory:");
+    const repository = new DemoRepository(database);
+    const secureStore = new SecureStore(config.encryptionKey);
+    const gateway = new FakeWechatGateway();
+    gateway.accountName = "finder-a";
+    const workers = createWorkers(config, repository, secureStore, gateway);
+
+    await beginLogin(repository, secureStore, gateway, config, "container-1");
+    await workers.runOnce();
+    const first = repository.getSession("container-1");
+    if (!first?.accountKeyHash) throw new Error("container did not authenticate");
+    const accountA = first.accountKeyHash;
+    expect(repository.listInbound(accountA).length).toBeGreaterThan(0);
+
+    // Re-scan the same container with a different WeChat account.
+    gateway.accountName = "finder-b";
+    const pending = await gateway.createLogin(config.qrTtlMs);
+    repository.beginQr(
+      "container-1",
+      Date.now(),
+      Date.now() + 3_600_000,
+      secureStore.encryptJson(
+        { kind: "pending", value: pending } satisfies StoredCredential,
+        "container-1",
+        "credentials",
+      ),
+    );
+    // Mid-relogin the binding survives, so the ledger is not sweepable yet.
+    expect(repository.getSession("container-1")?.accountKeyHash).toBe(accountA);
+    expect(repository.deleteOrphanAccountHistory()).toBe(0);
+
+    await workers.runOnce();
+    const rebound = repository.getSession("container-1");
+    if (!rebound?.accountKeyHash) throw new Error("container did not rebind");
+    expect(rebound.accountKeyHash).not.toBe(accountA);
+    // The old account lost its last container; runOnce's cleanup sweeps its history.
+    expect(repository.listInbound(accountA)).toHaveLength(0);
+  });
+
+  it("removes the holder's account history when the container is deleted", async () => {
+    const config = testConfig();
+    database = openDatabase(":memory:");
+    const repository = new DemoRepository(database);
+    const secureStore = new SecureStore(config.encryptionKey);
+    const gateway = new FakeWechatGateway();
+    gateway.accountName = "finder-gone";
+    const workers = createWorkers(config, repository, secureStore, gateway);
+
+    await beginLogin(repository, secureStore, gateway, config, "container-del");
+    await workers.runOnce();
+    const session = repository.getSession("container-del");
+    if (!session?.accountKeyHash) throw new Error("container did not authenticate");
+    expect(repository.listInbound(session.accountKeyHash).length).toBeGreaterThan(0);
+
+    expect(repository.deleteSession("container-del")).toBe(true);
+    expect(repository.listInbound(session.accountKeyHash)).toHaveLength(0);
   });
 });
 

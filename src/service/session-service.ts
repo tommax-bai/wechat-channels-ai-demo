@@ -311,19 +311,22 @@ export class SessionService {
       lastSuccessAt: source.lastSuccessAt,
       lastErrorCode: source.lastErrorCode,
     }));
-    const timeline = this.repository.listInbound(current.id).map((row) => {
+    // The timeline is the account's, not the container's: rows discovered by a predecessor
+    // container survive its retirement, and each envelope decrypts under the partition of the
+    // session that wrote it, which the row records.
+    const timeline = this.repository.listInbound(current.accountKeyHash).map((row) => {
       const item = this.secureStore.decryptJson<NormalizedInboundItem>(
         row.payloadEnvelope,
-        current.id,
+        row.sessionId,
         `inbound:${row.id}`,
       );
-      const reply = this.repository.getReplyForInbound(row.id, current.id);
+      const reply = this.repository.getReplyForInbound(row.id);
       let replyText: string | null = null;
       let replyAction: ReplyModelResult["action"] | null = null;
       if (reply?.outputEnvelope) {
         const output = this.secureStore.decryptJson<ReplyModelResult>(
           reply.outputEnvelope,
-          current.id,
+          reply.sessionId,
           `reply:${reply.id}`,
         );
         replyText = output.text;
@@ -372,7 +375,7 @@ export class SessionService {
     cursor?: PartnerContentCursor,
   ): PartnerContentPage {
     const rows = this.repository.listInboundBySource(
-      session.id,
+      session.accountKeyHash,
       source,
       limit + 1,
       cursor,
@@ -390,17 +393,21 @@ export class SessionService {
   }
 
   projectPartnerInbound(session: SessionRow, row: InboundRow): PartnerContentItem {
-    if (row.sessionId !== session.id) throw new Error("partner_content_session_mismatch");
+    // Content belongs to the account the caller's session hosts; rows written by a predecessor
+    // container are theirs to see, rows of any other account are not.
+    if (!session.accountKeyHash || row.accountKeyHash !== session.accountKeyHash) {
+      throw new Error("partner_content_session_mismatch");
+    }
     const item = this.secureStore.decryptJson<NormalizedInboundItem>(
       row.payloadEnvelope,
-      session.id,
+      row.sessionId,
       `inbound:${row.id}`,
     );
-    const reply = this.repository.getReplyForInbound(row.id, session.id);
+    const reply = this.repository.getReplyForInbound(row.id);
     const output = reply?.outputEnvelope
       ? this.secureStore.decryptJson<ReplyModelResult>(
           reply.outputEnvelope,
-          session.id,
+          reply.sessionId,
           `reply:${reply.id}`,
         )
       : null;

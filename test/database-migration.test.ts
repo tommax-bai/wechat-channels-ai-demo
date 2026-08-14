@@ -1,11 +1,15 @@
+import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { SecureStore } from "../src/crypto.js";
 import {
+  completeInboundAccountMigration,
   openDatabase,
   ROLLBACK_SAFE_PLATFORM_EXPIRY_MS,
   type SqliteDatabase,
 } from "../src/database.js";
-import { temporaryDirectory } from "./helpers.js";
+import { DemoRepository } from "../src/repository.js";
+import { fakeDm, temporaryDirectory, testConfig } from "./helpers.js";
 
 describe("authenticated session persistence migration", () => {
   let database: SqliteDatabase | undefined;
@@ -122,6 +126,143 @@ describe("authenticated session persistence migration", () => {
     expect(database.prepare(
       "SELECT last_login_at AS value FROM demo_sessions WHERE id = 'fresh'",
     ).get()).toEqual({ value: null });
+  });
+
+  it("re-keys legacy inbound history to the account dimension without losing dedup", () => {
+    const temporary = temporaryDirectory();
+    cleanup = temporary.cleanup;
+    const path = `${temporary.path}/inbound-account.sqlite`;
+    const secureStore = new SecureStore(testConfig().encryptionKey);
+    const legacy = new Database(path);
+    legacy.exec(`
+      CREATE TABLE demo_sessions (
+        id TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        auth_state TEXT NOT NULL,
+        automation_enabled INTEGER NOT NULL DEFAULT 1 CHECK (automation_enabled IN (0, 1)),
+        auth_generation INTEGER NOT NULL DEFAULT 0,
+        run_generation INTEGER NOT NULL DEFAULT 0,
+        account_key_hash TEXT UNIQUE,
+        last_error_code TEXT
+      );
+      CREATE TABLE source_states (
+        session_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        state TEXT NOT NULL,
+        baseline_complete INTEGER NOT NULL DEFAULT 0,
+        cursor_envelope TEXT,
+        last_success_at INTEGER,
+        last_error_code TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, source)
+      );
+      CREATE TABLE inbound_items (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES demo_sessions(id) ON DELETE CASCADE,
+        source TEXT NOT NULL CHECK (source IN ('dm', 'comment')),
+        external_id_hash TEXT NOT NULL,
+        payload_envelope TEXT NOT NULL,
+        occurred_at INTEGER NOT NULL,
+        discovered_at INTEGER NOT NULL,
+        historical INTEGER NOT NULL CHECK (historical IN (0, 1)),
+        reply_eligible INTEGER NOT NULL CHECK (reply_eligible IN (0, 1)),
+        UNIQUE (session_id, source, external_id_hash)
+      );
+      CREATE TABLE reply_jobs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES demo_sessions(id) ON DELETE CASCADE,
+        inbound_item_id TEXT NOT NULL UNIQUE REFERENCES inbound_items(id) ON DELETE CASCADE,
+        state TEXT NOT NULL,
+        output_envelope TEXT,
+        model TEXT,
+        provider_request_id TEXT,
+        platform_client_id TEXT NOT NULL UNIQUE,
+        run_generation INTEGER NOT NULL,
+        error_code TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    legacy.prepare(`
+      INSERT INTO demo_sessions (
+        id, created_at, updated_at, expires_at, auth_state, account_key_hash
+      ) VALUES ('holder', 1, 1, 2, 'active', 'acct-A')
+    `).run();
+    legacy.prepare(`
+      INSERT INTO demo_sessions (
+        id, created_at, updated_at, expires_at, auth_state, account_key_hash
+      ) VALUES ('retired', 1, 1, 2, 'logged_out', NULL)
+    `).run();
+    const liveItem = fakeDm("legacy-live", "finder-legacy", "老容器已答复", 1_000);
+    legacy.prepare(`
+      INSERT INTO inbound_items (
+        id, session_id, source, external_id_hash, payload_envelope,
+        occurred_at, discovered_at, historical, reply_eligible
+      ) VALUES ('item-live', 'holder', 'dm', ?, ?, 1000, 1000, 0, 1)
+    `).run(
+      secureStore.keyedHash(liveItem.externalId, "inbound:holder:dm"),
+      secureStore.encryptJson(liveItem, "holder", "inbound:item-live"),
+    );
+    legacy.prepare(`
+      INSERT INTO inbound_items (
+        id, session_id, source, external_id_hash, payload_envelope,
+        occurred_at, discovered_at, historical, reply_eligible
+      ) VALUES ('item-dead', 'retired', 'dm', 'dead-hash', 'dead-envelope', 900, 900, 1, 0)
+    `).run();
+    legacy.prepare(`
+      INSERT INTO reply_jobs (
+        id, session_id, inbound_item_id, state, platform_client_id,
+        run_generation, created_at, updated_at
+      ) VALUES ('reply-live', 'holder', 'item-live', 'confirmed', 'client-live', 0, 1000, 1000)
+    `).run();
+    legacy.prepare(`
+      INSERT INTO reply_jobs (
+        id, session_id, inbound_item_id, state, platform_client_id,
+        run_generation, created_at, updated_at
+      ) VALUES ('reply-dead', 'retired', 'item-dead', 'failed', 'client-dead', 0, 900, 900)
+    `).run();
+    legacy.close();
+
+    database = openDatabase(path);
+    // Rows without an owning account are unattributable and leave with the rebuild.
+    expect(database.prepare("SELECT id FROM inbound_items").all()).toEqual([{ id: "item-live" }]);
+    expect(database.prepare("SELECT id FROM reply_jobs").all()).toEqual([{ id: "reply-live" }]);
+    expect(database.pragma("user_version", { simple: true })).toBe(1);
+
+    const migration = completeInboundAccountMigration(database, secureStore);
+    expect(migration).toEqual({ rehashed: 1, dropped: 0 });
+    expect(database.pragma("user_version", { simple: true })).toBe(2);
+    expect(completeInboundAccountMigration(database, secureStore))
+      .toEqual({ rehashed: 0, dropped: 0 });
+
+    const accountHash = secureStore.keyedHash(liveItem.externalId, "inbound:acct:acct-A:dm");
+    expect(database.prepare(
+      "SELECT external_id_hash AS hash, account_key_hash AS account FROM inbound_items",
+    ).get()).toEqual({ hash: accountHash, account: "acct-A" });
+
+    // A successor container re-offering the same platform message must hit the dedup ledger.
+    const repository = new DemoRepository(database);
+    const holder = repository.getSession("holder");
+    if (!holder) throw new Error("missing holder session");
+    const reoffer = repository.insertInbound({
+      id: randomUUID(),
+      accountKeyHash: "acct-A",
+      sessionId: "holder",
+      source: "dm",
+      externalIdHash: accountHash,
+      payloadEnvelope: "unused",
+      occurredAt: 1_000,
+      discoveredAt: Date.now(),
+      historical: false,
+      replyEligible: true,
+      authGeneration: holder.authGeneration,
+      runGeneration: holder.runGeneration,
+      platformClientId: randomUUID(),
+    });
+    expect(reoffer).toEqual({ inserted: false, replyId: null });
+    expect(repository.getReplyForInbound("item-live")).toMatchObject({ state: "confirmed" });
   });
 
   it("creates the account QR table idempotently and cascades account deletion", () => {

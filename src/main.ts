@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { loadConfig, safeStartupSummary } from "./config.js";
 import { SecureStore } from "./crypto.js";
-import { openDatabase } from "./database.js";
+import { completeInboundAccountMigration, openDatabase } from "./database.js";
 import { ArkReplyModel } from "./model/ark.js";
 import { FunnelReplyModel } from "./model/funnel.js";
 import type { ReplyModelRegistry } from "./model/reply-model.js";
@@ -18,6 +18,9 @@ const config = loadConfig();
 const database = openDatabase(config.databasePath);
 const repository = new DemoRepository(database);
 const secureStore = new SecureStore(config.encryptionKey);
+// Must finish before any sync worker polls: until legacy dedup hashes are re-keyed to the
+// account namespace, an incremental overlap read would re-insert every message it overlaps.
+const inboundMigration = completeInboundAccountMigration(database, secureStore);
 const transport = new WechatTransport({
   baseUrl: config.wechatBaseUrl,
   timeoutMs: config.wechatTimeoutMs,
@@ -61,6 +64,9 @@ const workers = new WorkerCoordinator(
 );
 const app = await buildServer({ config, repository, sessions });
 
+if (inboundMigration.rehashed > 0 || inboundMigration.dropped > 0) {
+  app.log.info(inboundMigration, "re-keyed inbound history to the account dimension");
+}
 app.log.info(safeStartupSummary(config), "starting standalone WeChat Channels AI demo");
 await app.listen({ host: config.host, port: config.port });
 workers.start();
