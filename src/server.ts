@@ -308,7 +308,10 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     return reply.code(204).send();
   });
 
-  app.get("/api/events", async (request, reply) => {
+  // The SSE stream reconnects continuously for as long as a console tab is
+  // open; its per-request incoming/completed info lines are pure volume.
+  const sseRouteLogLevel = deps.config.nodeEnv === "test" ? "silent" : "warn";
+  app.get("/api/events", { logLevel: sseRouteLogLevel }, async (request, reply) => {
     const session = requireSession(request, reply, deps);
     const headerId = Number(request.headers["last-event-id"] ?? 0);
     const queryId = Number((request.query as { after?: string }).after ?? 0);
@@ -366,6 +369,10 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     const statusCode = statusFor(code);
     if (code === "internal_error") {
       request.log.error({ err: error, code, statusCode }, "request failed");
+    } else if (code === "ops_auth_required") {
+      // Stale console tabs retry the ops-gated endpoints indefinitely; keep
+      // their expected 401s out of the default info-level journal.
+      request.log.debug({ code, statusCode }, "request failed");
     } else {
       request.log.warn({ code, statusCode }, "request failed");
     }
