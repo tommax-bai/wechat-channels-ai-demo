@@ -37,6 +37,10 @@ const replyProviderBody = z.object({
 const accountWechatQrBody = z.object({
   dataUrl: z.string().min(1),
 }).strict();
+const contactSettingsBody = z.object({
+  wechatId: z.string().max(64).optional(),
+  replyType: z.enum(["qr", "wechat_id"]),
+}).strict();
 const connectReplySettingsBody = z.object({
   jobNumber: z.string().trim().min(1).max(128),
 }).strict();
@@ -268,6 +272,18 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
       session,
       body.provider,
       body.jobNumber,
+    );
+    return deps.sessions.snapshot(updated);
+  });
+
+  app.post("/api/session/contact-settings", async (request, reply) => {
+    assertSameOrigin(request, deps.config);
+    const session = requireSession(request, reply, deps);
+    const body = contactSettingsBody.parse(request.body);
+    const updated = deps.sessions.setContactSettings(
+      session,
+      body.wechatId ?? null,
+      body.replyType,
     );
     return deps.sessions.snapshot(updated);
   });
@@ -652,6 +668,7 @@ function statusFor(code: string): number {
     || code === "account_wechat_qr_too_large"
     || code === "invalid_cursor"
     || code === "funnel_job_number_required"
+    || code === "account_wechat_id_required"
   ) return 400;
   if (
     code === "funnel_provider_unavailable"

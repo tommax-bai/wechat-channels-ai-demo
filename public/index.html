@@ -133,7 +133,7 @@
                 </div>
               </div>
               <div class="wechat-qr-settings">
-                <p>招聘接口在私信中要求发送二维码时，将使用当前视频号账号配置的图片。</p>
+                <p>招聘接口在私信中要求发送联系方式时，将按下方选择的回复类型发送二维码图片或微信号文本。</p>
                 <small id="wechatQrMeta">仅支持 PNG、JPEG，文件不超过 512 KiB</small>
                 <input id="wechatQrFileInput" class="visually-hidden" type="file" accept="image/png,image/jpeg">
                 <div class="wechat-qr-actions">
@@ -141,6 +141,33 @@
                   <button id="wechatQrDeleteButton" class="button ghost danger compact" type="button" disabled>删除二维码</button>
                 </div>
                 <p id="wechatQrHint" class="wechat-qr-hint" role="status">等待读取当前账号配置</p>
+              </div>
+            </div>
+            <div class="contact-reply-settings">
+              <fieldset class="contact-type-options">
+                <legend>需要发送联系方式时回复</legend>
+                <label class="contact-type-option" for="contactTypeQrInput">
+                  <input id="contactTypeQrInput" type="radio" name="contactReplyType">
+                  <span>
+                    <strong>二维码图片</strong>
+                    <small>发送上方配置的业务微信二维码</small>
+                  </span>
+                </label>
+                <label class="contact-type-option" for="contactTypeWechatIdInput">
+                  <input id="contactTypeWechatIdInput" type="radio" name="contactReplyType">
+                  <span>
+                    <strong>微信号文本</strong>
+                    <small>以文字发送下方配置的微信号</small>
+                  </span>
+                </label>
+              </fieldset>
+              <div class="contact-wechat-id">
+                <label for="wechatContactIdInput">微信号</label>
+                <input id="wechatContactIdInput" type="text" maxlength="64" autocomplete="off" placeholder="用于文本回复的微信号或手机号">
+              </div>
+              <div class="contact-save-row">
+                <p id="contactHint" role="status">读取当前账号设置中</p>
+                <button id="saveContactButton" class="button secondary compact contact-save" type="button" disabled>保存回复类型</button>
               </div>
             </div>
           </section>

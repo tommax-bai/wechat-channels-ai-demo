@@ -25,6 +25,11 @@ const elements = {
   wechatQrChooseButton: document.querySelector("#wechatQrChooseButton"),
   wechatQrDeleteButton: document.querySelector("#wechatQrDeleteButton"),
   wechatQrHint: document.querySelector("#wechatQrHint"),
+  contactTypeQrInput: document.querySelector("#contactTypeQrInput"),
+  contactTypeWechatIdInput: document.querySelector("#contactTypeWechatIdInput"),
+  wechatContactIdInput: document.querySelector("#wechatContactIdInput"),
+  contactHint: document.querySelector("#contactHint"),
+  saveContactButton: document.querySelector("#saveContactButton"),
   dmHealth: document.querySelector("#dmHealth"),
   dmDot: document.querySelector("#dmDot"),
   commentHealth: document.querySelector("#commentHealth"),
@@ -81,6 +86,8 @@ const errorLabels = {
   account_wechat_qr_invalid: "二维码文件无效，请选择 PNG 或 JPEG 图片",
   account_wechat_qr_not_configured: "当前账号尚未配置业务微信二维码",
   account_wechat_qr_too_large: "二维码文件不能超过 512 KiB",
+  account_wechat_id_required: "请先填写微信号",
+  account_wechat_id_not_configured: "当前账号尚未配置微信号",
   wechat_qr_file_empty: "二维码文件不能为空",
   wechat_qr_file_type_invalid: "仅支持 PNG 或 JPEG 图片",
   wechat_qr_file_too_large: "二维码文件不能超过 512 KiB",
@@ -112,6 +119,9 @@ let sharedSessions = { selectedSessionId: null, sessions: [] };
 let providerFormSessionId = null;
 let providerFormDirty = false;
 let providerSaving = false;
+let contactFormSessionId = null;
+let contactFormDirty = false;
+let contactSaving = false;
 let sessionTransitioning = false;
 let sessionGeneration = 0;
 let wechatQrAccountKey = null;
@@ -225,7 +235,10 @@ async function selectSession(sessionId) {
   sessionTransitioning = true;
   setSessionButtonsDisabled(true);
   elements.addSessionButton.disabled = true;
-  if (snapshot) updateProviderControls(snapshot, true);
+  if (snapshot) {
+    updateProviderControls(snapshot, true);
+    updateContactControls(snapshot, true);
+  }
   try {
     const nextSnapshot = await api("/api/sessions/select", {
       method: "POST",
@@ -253,6 +266,7 @@ async function selectSession(sessionId) {
       elements.addSessionButton.disabled = false;
       if (synchronized && snapshot) {
         updateProviderControls(snapshot, true);
+        updateContactControls(snapshot, true);
         updateWechatQrControls();
       } else void refresh();
     }
@@ -269,7 +283,10 @@ async function addSession() {
   sessionTransitioning = true;
   setSessionButtonsDisabled(true);
   setBusy(elements.addSessionButton, true, "正在创建");
-  if (snapshot) updateProviderControls(snapshot, true);
+  if (snapshot) {
+    updateProviderControls(snapshot, true);
+    updateContactControls(snapshot, true);
+  }
   try {
     const nextSnapshot = await api("/api/sessions/new", { method: "POST", body: "{}" });
     const nextSharedSessions = await api("/api/sessions");
@@ -295,6 +312,7 @@ async function addSession() {
       setBusy(elements.addSessionButton, false, "添加视频号");
       if (synchronized && snapshot) {
         updateProviderControls(snapshot, true);
+        updateContactControls(snapshot, true);
         updateWechatQrControls();
       } else void refresh();
     }
@@ -431,6 +449,7 @@ function render(data) {
   elements.accountName.textContent = data.accountDisplayName || "尚未连接";
   renderProviderSettings(data);
   renderWechatQrSettings(data);
+  renderContactSettings(data);
   elements.automationBadge.textContent = data.automationEnabled ? "运行中" : "已停止";
   elements.automationBadge.className = `badge ${data.automationEnabled ? "" : "muted"}`;
   elements.automationButton.textContent = data.automationEnabled ? "停止自动回复" : "恢复自动回复";
@@ -506,6 +525,86 @@ function selectedProviderDraft() {
 
 function providerLabel(provider) {
   return provider === "funnel" ? "招聘接口" : "CHAT回复";
+}
+
+function renderContactSettings(data) {
+  const activeSessionId = sharedSessions.selectedSessionId;
+  if (!contactFormDirty || contactFormSessionId !== activeSessionId) {
+    contactFormSessionId = activeSessionId;
+    contactFormDirty = false;
+    elements.contactTypeQrInput.checked = data.contactReplyType !== "wechat_id";
+    elements.contactTypeWechatIdInput.checked = data.contactReplyType === "wechat_id";
+    elements.wechatContactIdInput.value = data.wechatContactId || "";
+  }
+  updateContactControls(data);
+}
+
+function updateContactControls(data, preserveHint = false) {
+  const draftType = selectedContactTypeDraft();
+  const wechatId = elements.wechatContactIdInput.value.trim();
+  const controlsDisabled = contactSaving || sessionTransitioning;
+  elements.contactTypeQrInput.disabled = controlsDisabled;
+  elements.contactTypeWechatIdInput.disabled = controlsDisabled;
+  elements.wechatContactIdInput.disabled = controlsDisabled;
+  elements.wechatContactIdInput.setAttribute(
+    "aria-invalid",
+    String(draftType === "wechat_id" && !wechatId),
+  );
+
+  const valid = draftType === "qr" || Boolean(wechatId);
+  elements.saveContactButton.disabled = controlsDisabled || !contactFormDirty || !valid;
+  elements.saveContactButton.textContent = contactSaving ? "正在保存" : "保存回复类型";
+
+  if (preserveHint) return;
+  if (draftType === "wechat_id" && !wechatId) {
+    elements.contactHint.textContent = "请先填写微信号";
+  } else if (contactFormDirty) {
+    elements.contactHint.textContent = `保存后，需要发送联系方式时将回复${contactTypeLabel(draftType)}`;
+  } else if (data.contactReplyType !== "wechat_id" && !normalizeWechatQrMetadata(data.wechatQr).configured) {
+    elements.contactHint.textContent = "当前回复二维码图片，请先上传业务微信二维码";
+  } else {
+    elements.contactHint.textContent = `当前账号回复${contactTypeLabel(data.contactReplyType)}`;
+  }
+}
+
+function selectedContactTypeDraft() {
+  return elements.contactTypeWechatIdInput.checked ? "wechat_id" : "qr";
+}
+
+function contactTypeLabel(replyType) {
+  return replyType === "wechat_id" ? "微信号文本" : "二维码图片";
+}
+
+async function saveContactSettings() {
+  if (!snapshot || contactSaving || sessionTransitioning) return;
+  const generation = sessionGeneration;
+  const formSessionId = contactFormSessionId;
+  const replyType = selectedContactTypeDraft();
+  contactSaving = true;
+  updateContactControls(snapshot, true);
+  elements.contactHint.textContent = "正在保存当前账号设置";
+  try {
+    const updatedSnapshot = await api("/api/session/contact-settings", {
+      method: "POST",
+      body: JSON.stringify({
+        replyType,
+        wechatId: elements.wechatContactIdInput.value.trim(),
+      }),
+    });
+    if (
+      generation !== sessionGeneration
+      || formSessionId !== sharedSessions.selectedSessionId
+    ) return;
+    snapshot = updatedSnapshot;
+    contactFormDirty = false;
+    render(snapshot);
+    elements.contactHint.textContent = "当前账号回复类型已保存";
+  } catch (error) {
+    elements.contactHint.textContent = safeLabel(error.message);
+  } finally {
+    contactSaving = false;
+    if (snapshot) updateContactControls(snapshot, true);
+  }
 }
 
 function emptyWechatQrMetadata() {
@@ -755,7 +854,10 @@ function applyWechatQrPayload(payload, dataUrl) {
   wechatQrMetadata = metadata;
   wechatQrRevision = wechatQrMetadataRevision(metadata);
   wechatQrPreviewDataUrl = metadata.configured ? dataUrl : null;
-  if (snapshot) snapshot = { ...snapshot, wechatQr: metadata };
+  if (snapshot) {
+    snapshot = { ...snapshot, wechatQr: metadata };
+    updateContactControls(snapshot);
+  }
 }
 
 function assertWechatQrResponseAccount(payload, accountKey) {
@@ -1058,6 +1160,19 @@ elements.funnelJobNumberInput.addEventListener("input", () => {
   if (snapshot) updateProviderControls(snapshot);
 });
 elements.saveReplyProviderButton.addEventListener("click", () => void saveReplyProvider());
+elements.contactTypeQrInput.addEventListener("change", () => {
+  contactFormDirty = true;
+  if (snapshot) updateContactControls(snapshot);
+});
+elements.contactTypeWechatIdInput.addEventListener("change", () => {
+  contactFormDirty = true;
+  if (snapshot) updateContactControls(snapshot);
+});
+elements.wechatContactIdInput.addEventListener("input", () => {
+  contactFormDirty = true;
+  if (snapshot) updateContactControls(snapshot);
+});
+elements.saveContactButton.addEventListener("click", () => void saveContactSettings());
 elements.wechatQrChooseButton.addEventListener("click", () => {
   if (wechatQrBusy || wechatQrLoading || sessionTransitioning) return;
   elements.wechatQrFileInput.value = "";

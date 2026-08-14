@@ -775,30 +775,45 @@ export class WorkerCoordinator {
         ) {
           throw new ModelError("model_invalid_reply_action", generated.requestId);
         }
-        const row = this.repository.getAccountQrAsset(job.sessionId);
-        if (!row) {
-          throw new ModelError(
-            "account_wechat_qr_not_configured",
-            generated.requestId,
-          );
-        }
-        try {
-          const storedQr = this.secureStore.decryptJson<unknown>(
-            row.envelope,
-            job.sessionId,
-            "account-wechat-qr",
-          );
-          const parsedQr = parseStoredAccountWechatQr(storedQr);
-          if (
-            parsedQr.mimeType !== row.mimeType
-            || parsedQr.bytes.byteLength !== row.byteLength
-          ) {
-            throw new Error("account_wechat_qr_invalid");
+        if (generationSession.contactReplyType === "wechat_id") {
+          // The account is configured to answer the action with its WeChat ID as a plain
+          // text bubble instead of the QR image. Folding it into messages (and the stored
+          // result) makes the ordinary text dispatch path — and the timeline — carry it.
+          const wechatContactId = generationSession.wechatContactId?.trim();
+          if (!wechatContactId) {
+            throw new ModelError(
+              "account_wechat_id_not_configured",
+              generated.requestId,
+            );
           }
-          qrAsset = { mimeType: parsedQr.mimeType, bytes: parsedQr.bytes };
-          qrAssetRevision = this.accountQrAssetRevision(row);
-        } catch {
-          throw new ModelError("account_wechat_qr_invalid", generated.requestId);
+          messages = [...messages, wechatContactId];
+          generated = { ...generated, text: messages.join("\n"), messages };
+        } else {
+          const row = this.repository.getAccountQrAsset(job.sessionId);
+          if (!row) {
+            throw new ModelError(
+              "account_wechat_qr_not_configured",
+              generated.requestId,
+            );
+          }
+          try {
+            const storedQr = this.secureStore.decryptJson<unknown>(
+              row.envelope,
+              job.sessionId,
+              "account-wechat-qr",
+            );
+            const parsedQr = parseStoredAccountWechatQr(storedQr);
+            if (
+              parsedQr.mimeType !== row.mimeType
+              || parsedQr.bytes.byteLength !== row.byteLength
+            ) {
+              throw new Error("account_wechat_qr_invalid");
+            }
+            qrAsset = { mimeType: parsedQr.mimeType, bytes: parsedQr.bytes };
+            qrAssetRevision = this.accountQrAssetRevision(row);
+          } catch {
+            throw new ModelError("account_wechat_qr_invalid", generated.requestId);
+          }
         }
       }
     } catch (error) {

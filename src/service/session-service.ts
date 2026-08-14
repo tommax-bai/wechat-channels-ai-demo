@@ -22,6 +22,7 @@ import type {
   AccountWechatQrMetadata,
   AccountWechatQrPreview,
   AuthState,
+  ContactReplyType,
   InboundSource,
   NormalizedInboundItem,
   PartnerContentCursor,
@@ -210,6 +211,24 @@ export class SessionService {
     return updated;
   }
 
+  setContactSettings(
+    session: SessionRow,
+    wechatId: string | null,
+    replyType: ContactReplyType,
+  ): SessionRow {
+    const current = this.repository.getSession(session.id) ?? session;
+    const wechatContactId = wechatId?.trim() || null;
+    if (replyType === "wechat_id" && !wechatContactId) {
+      throw new Error("account_wechat_id_required");
+    }
+    return this.repository.setContactSettings(
+      current.id,
+      wechatContactId,
+      replyType,
+      Date.now(),
+    ) ?? current;
+  }
+
   getAccountWechatQrMetadata(sessionId: string): AccountWechatQrMetadata {
     const row = this.repository.getAccountQrAsset(sessionId);
     return row
@@ -356,6 +375,8 @@ export class SessionService {
       replyProvider: current.replyProvider,
       funnelJobNumber: current.funnelJobNumber,
       wechatQr: this.getAccountWechatQrMetadata(current.id),
+      wechatContactId: current.wechatContactId,
+      contactReplyType: current.contactReplyType,
       sources,
       timeline,
       service: {

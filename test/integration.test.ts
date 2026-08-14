@@ -874,6 +874,119 @@ describe("multi-user demo flow", () => {
     expect(gateway.imageSends).toHaveLength(0);
   });
 
+  it("answers a QR action with the WeChat ID text when the reply type is wechat_id", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    repository.setReplyProvider(
+      requireSessionId(database),
+      "funnel",
+      "job-42",
+      Date.now(),
+    );
+    const saved = await server.inject({
+      method: "POST",
+      url: "/api/session/contact-settings",
+      headers: { cookie: visitor.cookie, origin: "http://localhost:4310" },
+      payload: { replyType: "wechat_id", wechatId: "kefu-wechat-001" },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      wechatContactId: "kefu-wechat-001",
+      contactReplyType: "wechat_id",
+    });
+    // No account QR is configured: the wechat_id type must not need one.
+    funnelModel.result = {
+      text: "第一条\n我把联系方式发你",
+      messages: ["第一条", "我把联系方式发你"],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+    };
+    const inbound = fakeDm("funnel-wechat-id-1", "finder-1", "加个微信吧");
+    gateway.newItems.set("finder-1", [inbound]);
+
+    await workers.runOnce();
+
+    expect(gateway.sends.map((send) => send.text)).toEqual([
+      "第一条",
+      "我把联系方式发你",
+      "kefu-wechat-001",
+    ]);
+    expect(gateway.imageSends).toHaveLength(0);
+    const baseClientId = gateway.sends[0]?.clientId;
+    expect(baseClientId).toBeTruthy();
+    expect(gateway.sends[2]?.clientId).toBe(`${baseClientId}-3`);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "加个微信吧")).toMatchObject({
+        replyText: "第一条\n我把联系方式发你\nkefu-wechat-001",
+        replyState: "confirmed",
+        replyErrorCode: null,
+      });
+  });
+
+  it("fails a wechat_id action before sending text when the WeChat ID is missing", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    await startLogin(server, visitor.cookie);
+    await workers.runOnce();
+    const sessionId = requireSessionId(database);
+    repository.setReplyProvider(sessionId, "funnel", "job-42", Date.now());
+    // The API refuses to save this shape; reach it directly to model legacy/cleared data.
+    repository.setContactSettings(sessionId, null, "wechat_id", Date.now());
+    funnelModel.result = {
+      text: "我把联系方式发你",
+      messages: ["我把联系方式发你"],
+      disposition: "reply",
+      action: "send_wechat_qr",
+      model: "funnel",
+      requestId: "funnel-wechat-id-missing-request",
+    };
+    gateway.newItems.set("finder-1", [
+      fakeDm("funnel-wechat-id-missing", "finder-1", "微信号多少"),
+    ]);
+
+    await workers.runOnce();
+
+    expect(gateway.sends).toHaveLength(0);
+    expect(gateway.imageSends).toHaveLength(0);
+    expect((await snapshot(server, visitor.cookie)).timeline
+      .find((item) => item.text === "微信号多少")).toMatchObject({
+        replyState: "failed",
+        replyErrorCode: "account_wechat_id_not_configured",
+      });
+    expect(database?.prepare(`
+      SELECT provider_request_id AS requestId
+      FROM reply_jobs WHERE error_code = 'account_wechat_id_not_configured'
+    `).get()).toEqual({ requestId: "funnel-wechat-id-missing-request" });
+  });
+
+  it("rejects saving the wechat_id reply type without a WeChat ID", async () => {
+    const server = requireApp(app);
+    const visitor = await bootstrap(server);
+    const rejected = await server.inject({
+      method: "POST",
+      url: "/api/session/contact-settings",
+      headers: { cookie: visitor.cookie, origin: "http://localhost:4310" },
+      payload: { replyType: "wechat_id", wechatId: "  " },
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toEqual({ error: "account_wechat_id_required" });
+
+    const kept = await server.inject({
+      method: "POST",
+      url: "/api/session/contact-settings",
+      headers: { cookie: visitor.cookie, origin: "http://localhost:4310" },
+      payload: { replyType: "qr", wechatId: "" },
+    });
+    expect(kept.statusCode).toBe(200);
+    expect(kept.json()).toMatchObject({
+      wechatContactId: null,
+      contactReplyType: "qr",
+    });
+  });
+
   it("records an empty funnel comment reply as skipped without a platform write", async () => {
     const server = requireApp(app);
     const visitor = await bootstrap(server);

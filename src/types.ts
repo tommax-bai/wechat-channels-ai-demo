@@ -16,6 +16,8 @@ export type AuthState =
 
 export type InboundSource = "dm" | "comment";
 export type ReplyProvider = "chat-llm" | "funnel";
+/** What a send_wechat_qr action actually sends: the QR image or the WeChat ID as text. */
+export type ContactReplyType = "qr" | "wechat_id";
 export type SourceState = "pending" | "healthy" | "auth_required" | "schema_changed" | "error";
 export type ReplyState =
   | "queued"
@@ -135,6 +137,8 @@ export interface SessionSnapshot {
   replyProvider: ReplyProvider;
   funnelJobNumber: string | null;
   wechatQr: AccountWechatQrMetadata;
+  wechatContactId: string | null;
+  contactReplyType: ContactReplyType;
   sources: Array<{
     source: InboundSource;
     state: SourceState;

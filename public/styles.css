@@ -423,6 +423,59 @@ h2 {
 .wechat-qr-actions .button { padding: 9px 10px; font-size: 10px; }
 .wechat-qr-hint { min-height: 17px; }
 
+.contact-reply-settings { display: grid; gap: 10px; padding-top: 13px; border-top: 1px dashed var(--line); }
+
+.contact-type-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.contact-type-options legend { margin-bottom: 8px; padding: 0; color: var(--muted); font-size: 11px; font-weight: 700; }
+.contact-type-option { position: relative; min-width: 0; cursor: pointer; }
+.contact-type-option input { position: absolute; opacity: 0; pointer-events: none; }
+.contact-type-option > span {
+  display: block;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+.contact-type-option strong, .contact-type-option small { display: block; }
+.contact-type-option strong { font-size: 12px; }
+.contact-type-option small { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.contact-type-option input:checked + span { border-color: var(--green); background: var(--green-soft); }
+.contact-type-option input:focus-visible + span { outline: 3px solid rgba(15, 157, 104, 0.28); outline-offset: 2px; }
+.contact-type-option input:disabled + span { cursor: not-allowed; opacity: 0.5; }
+
+.contact-wechat-id { display: grid; gap: 6px; }
+.contact-wechat-id label { color: var(--muted); font-size: 11px; font-weight: 700; }
+.contact-wechat-id input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  outline: 0;
+  background: #fff;
+}
+.contact-wechat-id input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(15, 157, 104, 0.12); }
+.contact-wechat-id input[aria-invalid="true"]:not(:disabled) { border-color: #d9822b; }
+.contact-wechat-id input:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.contact-save-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.contact-save-row p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.button.contact-save { width: auto; padding: 9px 13px; font-size: 11px; }
+
 .source-list {
   overflow: hidden;
   border: 1px solid var(--line);

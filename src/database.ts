@@ -21,6 +21,9 @@ export function openDatabase(path: string): SqliteDatabase {
       reply_provider TEXT NOT NULL DEFAULT 'chat-llm'
         CHECK (reply_provider IN ('chat-llm', 'funnel')),
       funnel_job_number TEXT,
+      wechat_contact_id TEXT,
+      contact_reply_type TEXT NOT NULL DEFAULT 'qr'
+        CHECK (contact_reply_type IN ('qr', 'wechat_id')),
       auth_generation INTEGER NOT NULL DEFAULT 0,
       run_generation INTEGER NOT NULL DEFAULT 0,
       account_key_hash TEXT UNIQUE,
@@ -131,6 +134,16 @@ export function openDatabase(path: string): SqliteDatabase {
   }
   if (!sessionColumns.some((column) => column.name === "funnel_job_number")) {
     db.exec("ALTER TABLE demo_sessions ADD COLUMN funnel_job_number TEXT");
+  }
+  if (!sessionColumns.some((column) => column.name === "wechat_contact_id")) {
+    db.exec("ALTER TABLE demo_sessions ADD COLUMN wechat_contact_id TEXT");
+  }
+  if (!sessionColumns.some((column) => column.name === "contact_reply_type")) {
+    db.exec(`
+      ALTER TABLE demo_sessions
+      ADD COLUMN contact_reply_type TEXT NOT NULL DEFAULT 'qr'
+        CHECK (contact_reply_type IN ('qr', 'wechat_id'))
+    `);
   }
   if (!sessionColumns.some((column) => column.name === "linked_session_id")) {
     db.exec("ALTER TABLE demo_sessions ADD COLUMN linked_session_id TEXT");

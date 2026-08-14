@@ -6,6 +6,7 @@ import {
 import type {
   AccountQrAsset,
   AuthState,
+  ContactReplyType,
   InboundSource,
   ReplyProvider,
   ReplyState,
@@ -22,6 +23,8 @@ export interface SessionRow {
   automationEnabled: boolean;
   replyProvider: ReplyProvider;
   funnelJobNumber: string | null;
+  wechatContactId: string | null;
+  contactReplyType: ContactReplyType;
   authGeneration: number;
   runGeneration: number;
   accountKeyHash: string | null;
@@ -93,6 +96,8 @@ interface RawSession {
   automation_enabled: number;
   reply_provider: ReplyProvider;
   funnel_job_number: string | null;
+  wechat_contact_id: string | null;
+  contact_reply_type: ContactReplyType;
   auth_generation: number;
   run_generation: number;
   account_key_hash: string | null;
@@ -330,10 +335,18 @@ export class DemoRepository {
         this.db
           .prepare(`
             UPDATE demo_sessions
-            SET reply_provider = ?, funnel_job_number = ?, updated_at = ?
+            SET reply_provider = ?, funnel_job_number = ?,
+                wechat_contact_id = ?, contact_reply_type = ?, updated_at = ?
             WHERE id = ?
           `)
-          .run(retired.replyProvider, retired.funnelJobNumber, now, id);
+          .run(
+            retired.replyProvider,
+            retired.funnelJobNumber,
+            retired.wechatContactId,
+            retired.contactReplyType,
+            now,
+            id,
+          );
       }
       this.db
         .prepare(`
@@ -490,6 +503,23 @@ export class DemoRepository {
       `)
       .run(provider, funnelJobNumber, now, id);
     if (result.changes > 0) this.appendEvent(id, "settings.updated", null, now);
+    return this.getSession(id);
+  }
+
+  setContactSettings(
+    id: string,
+    wechatContactId: string | null,
+    contactReplyType: ContactReplyType,
+    now: number,
+  ): SessionRow | null {
+    const result = this.db
+      .prepare(`
+        UPDATE demo_sessions
+        SET wechat_contact_id = ?, contact_reply_type = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(wechatContactId, contactReplyType, now, id);
+    if (result.changes > 0) this.appendEvent(id, "settings.updated", "wechat-contact", now);
     return this.getSession(id);
   }
 
@@ -1163,6 +1193,8 @@ function mapSession(row: RawSession): SessionRow {
     automationEnabled: row.automation_enabled === 1,
     replyProvider: row.reply_provider,
     funnelJobNumber: row.funnel_job_number,
+    wechatContactId: row.wechat_contact_id,
+    contactReplyType: row.contact_reply_type,
     authGeneration: row.auth_generation,
     runGeneration: row.run_generation,
     accountKeyHash: row.account_key_hash,
