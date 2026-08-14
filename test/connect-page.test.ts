@@ -155,7 +155,7 @@ describe("cookie-bound connect page", () => {
       .toContain(`${PENDING_COOKIE}=`);
   });
 
-  it("hands a duplicate Finder login to the retained account with its QR intact", async () => {
+  it("hands the account to a fresh duplicate login and retires the previous container", async () => {
     const server = requireApp(app);
     gateway.accountName = "finder-shared-connect";
     const ownerStart = await server.inject({ method: "GET", url: "/api/connect" });
@@ -193,13 +193,34 @@ describe("cookie-bound connect page", () => {
       visitorBound.headers["set-cookie"],
       AFFINITY_COOKIE,
     );
-    expect(visitorAffinity).toBe(ownerAffinity);
-    const linkedRows = database?.prepare(`
-      SELECT COUNT(*) AS count FROM demo_sessions
-      WHERE linked_session_id IS NOT NULL
-        AND last_error_code = 'account_already_connected'
-    `).get() as { count: number } | undefined;
-    expect(linkedRows?.count).toBe(1);
+    expect(visitorAffinity).not.toBe(ownerAffinity);
+
+    const retiredRow = database?.prepare(`
+      SELECT auth_state, account_key_hash, linked_session_id FROM demo_sessions
+      WHERE last_error_code = 'superseded_by_relogin'
+    `).get() as {
+      auth_state: string;
+      account_key_hash: string | null;
+      linked_session_id: string | null;
+    } | undefined;
+    expect(retiredRow).toMatchObject({
+      auth_state: "logged_out",
+      account_key_hash: null,
+    });
+    expect(`${AFFINITY_COOKIE}=${retiredRow?.linked_session_id}`).toBe(visitorAffinity);
+
+    const ownerRevisit = await server.inject({
+      method: "GET",
+      url: "/api/connect",
+      headers: { cookie: ownerAffinity },
+    });
+    expect(ownerRevisit.statusCode).toBe(200);
+    expect(ownerRevisit.json<ConnectSnapshot>()).toMatchObject({
+      accountBound: true,
+      accountDisplayName: "账号 finder-shared-connect",
+    });
+    expect(responseCookie(ownerRevisit.headers["set-cookie"], AFFINITY_COOKIE))
+      .toBe(visitorAffinity);
   });
 
   it("preserves a retained CHAT account until explicit save and lists it once on the dashboard", async () => {

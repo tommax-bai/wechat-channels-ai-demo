@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  parseAccountWechatQrDataUrl,
+  parseStoredAccountWechatQr,
+  storedAccountWechatQr,
+} from "../src/account-wechat-qr.js";
 import { SecureStore } from "../src/crypto.js";
 import { openDatabase, type SqliteDatabase } from "../src/database.js";
 import { DemoRepository } from "../src/repository.js";
@@ -9,6 +14,7 @@ import { WechatApiError } from "../src/wechat/transport.js";
 import {
   FakeReplyModel,
   FakeWechatGateway,
+  fakeDm,
   fakePlatformSession,
   testConfig,
 } from "./helpers.js";
@@ -587,6 +593,138 @@ describe("WorkerCoordinator source retry pacing", () => {
   });
 });
 
+describe("WorkerCoordinator re-login takeover", () => {
+  let database: SqliteDatabase | undefined;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    database?.close();
+    database = undefined;
+  });
+
+  it("retires the previous container and hands its account over to the new login", async () => {
+    const config = testConfig();
+    database = openDatabase(":memory:");
+    const repository = new DemoRepository(database);
+    const secureStore = new SecureStore(config.encryptionKey);
+    const gateway = new FakeWechatGateway();
+    gateway.accountName = "finder-takeover";
+    const workers = createWorkers(config, repository, secureStore, gateway);
+
+    await beginLogin(repository, secureStore, gateway, config, "container-old");
+    await workers.runOnce();
+    const oldRow = repository.getSession("container-old");
+    if (!oldRow?.accountKeyHash) throw new Error("old container did not authenticate");
+
+    repository.setReplyProvider("container-old", "funnel", "JOB-1234", Date.now());
+    const qr = parseAccountWechatQrDataUrl(TEST_QR_DATA_URL);
+    repository.upsertAccountQrAsset({
+      sessionId: "container-old",
+      envelope: secureStore.encryptJson(
+        storedAccountWechatQr(qr),
+        "container-old",
+        "account-wechat-qr",
+      ),
+      mimeType: qr.mimeType,
+      byteLength: qr.bytes.byteLength,
+      updatedAt: Date.now(),
+    });
+    const configured = repository.getSession("container-old");
+    if (!configured) throw new Error("missing configured old container");
+    const inserted = repository.insertInbound({
+      id: "inbound-queued",
+      sessionId: "container-old",
+      source: "dm",
+      externalIdHash: "hash-queued",
+      payloadEnvelope: secureStore.encryptJson(
+        fakeDm("queued", "finder-takeover", "待回复"),
+        "container-old",
+        "inbound:inbound-queued",
+      ),
+      occurredAt: Date.now(),
+      discoveredAt: Date.now(),
+      historical: false,
+      replyEligible: true,
+      authGeneration: configured.authGeneration,
+      runGeneration: configured.runGeneration,
+      platformClientId: "client-queued",
+    });
+    expect(inserted.replyId).not.toBeNull();
+
+    await beginLogin(repository, secureStore, gateway, config, "container-new");
+    await workers.runOnce();
+
+    const retired = repository.getSession("container-old");
+    expect(retired).toMatchObject({
+      authState: "logged_out",
+      accountKeyHash: null,
+      platformPersistent: false,
+      lastErrorCode: "superseded_by_relogin",
+      linkedSessionId: "container-new",
+    });
+    if (!retired) throw new Error("missing retired container");
+    expect(retired.expiresAt).toBeLessThanOrEqual(Date.now() + config.pendingSessionTtlMs);
+    expect(repository.getCredentialEnvelope("container-old")).toBeNull();
+    expect(repository.getReplyForInbound("inbound-queued", "container-old")).toMatchObject({
+      state: "failed",
+      errorCode: "account_superseded",
+    });
+
+    const successor = repository.getSession("container-new");
+    expect(successor).toMatchObject({
+      accountKeyHash: oldRow.accountKeyHash,
+      platformPersistent: true,
+      replyProvider: "funnel",
+      funnelJobNumber: "JOB-1234",
+    });
+    const successorEnvelope = repository.getCredentialEnvelope("container-new");
+    if (!successorEnvelope) throw new Error("missing successor credential");
+    const credential = secureStore.decryptJson<StoredCredential>(
+      successorEnvelope,
+      "container-new",
+      "credentials",
+    );
+    expect(credential.kind).toBe("session");
+
+    const carried = repository.getAccountQrAsset("container-new");
+    expect(carried).toMatchObject({
+      mimeType: qr.mimeType,
+      byteLength: qr.bytes.byteLength,
+    });
+    if (!carried) throw new Error("missing carried QR asset");
+    const carriedStored = secureStore.decryptJson<unknown>(
+      carried.envelope,
+      "container-new",
+      "account-wechat-qr",
+    );
+    expect(
+      Buffer.from(parseStoredAccountWechatQr(carriedStored).bytes).equals(qr.bytes),
+    ).toBe(true);
+  });
+});
+
+const TEST_QR_DATA_URL = `data:image/png;base64,${
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64")
+}`;
+
+async function beginLogin(
+  repository: DemoRepository,
+  secureStore: SecureStore,
+  gateway: FakeWechatGateway,
+  config: ReturnType<typeof testConfig>,
+  sessionId: string,
+): Promise<void> {
+  const now = Date.now();
+  repository.createSession(sessionId, now, now + 3_600_000, true);
+  const pending = await gateway.createLogin(config.qrTtlMs);
+  const envelope = secureStore.encryptJson(
+    { kind: "pending", value: pending } satisfies StoredCredential,
+    sessionId,
+    "credentials",
+  );
+  repository.beginQr(sessionId, now, now + 3_600_000, envelope);
+}
+
 function createWorkers(
   config: ReturnType<typeof testConfig>,
   repository: DemoRepository,
@@ -630,7 +768,7 @@ function authenticateFixture(
     secureStore.keyedHash(platformSession.finderUsername, "finder-account"),
     credentialEnvelope,
     now,
-  )) throw new Error("failed to authenticate worker fixture");
+  ).completed) throw new Error("failed to authenticate worker fixture");
 
   const dmCursorEnvelope = secureStore.encryptJson(
     "dm-cursor",

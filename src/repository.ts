@@ -301,9 +301,17 @@ export class DemoRepository {
     accountKeyHash: string,
     credentialEnvelope: string,
     now: number,
-  ): boolean {
+    retiredExpiresAt: number = now,
+  ): { completed: boolean; retired: SessionRow | null } {
     return this.db.transaction(() => {
-      const result = this.db
+      const current = this.db
+        .prepare("SELECT auth_generation FROM demo_sessions WHERE id = ?")
+        .get(id) as { auth_generation: number } | undefined;
+      if (!current || current.auth_generation !== generation) {
+        return { completed: false, retired: null };
+      }
+      const retired = this.retireAccountHolder(id, accountKeyHash, retiredExpiresAt, now);
+      this.db
         .prepare(`
           UPDATE demo_sessions
           SET auth_state = 'baseline_sync', account_key_hash = ?, last_error_code = NULL,
@@ -312,7 +320,15 @@ export class DemoRepository {
           WHERE id = ? AND auth_generation = ?
         `)
         .run(accountKeyHash, ROLLBACK_SAFE_PLATFORM_EXPIRY_MS, now, now, id, generation);
-      if (result.changes === 0) return false;
+      if (retired) {
+        this.db
+          .prepare(`
+            UPDATE demo_sessions
+            SET reply_provider = ?, funnel_job_number = ?, updated_at = ?
+            WHERE id = ?
+          `)
+          .run(retired.replyProvider, retired.funnelJobNumber, now, id);
+      }
       this.db
         .prepare(`
           INSERT INTO encrypted_credentials(session_id, envelope, updated_at)
@@ -321,31 +337,52 @@ export class DemoRepository {
         `)
         .run(id, credentialEnvelope, now);
       this.appendEvent(id, "auth.updated", null, now);
-      return true;
+      return { completed: true, retired };
     })();
   }
 
-  linkAuthenticationToExistingAccount(
-    id: string,
-    generation: number,
+  /**
+   * A fresh scan owns the account: whichever session previously held this Finder identity is
+   * retired here, inside the same transaction that completes the new login, so the unique
+   * account_key_hash can never block a re-login and no window exists where two sessions both
+   * host one account. The retired row keeps its history until retiredExpiresAt, then leaves
+   * through the ordinary expired-session cleanup; account_key_hash must be cleared or the
+   * startup platform-persistence migration would resurrect it.
+   */
+  private retireAccountHolder(
+    successorId: string,
     accountKeyHash: string,
+    retiredExpiresAt: number,
     now: number,
   ): SessionRow | null {
-    return this.db.transaction(() => {
-      const target = this.getSessionByAccountKeyHash(accountKeyHash);
-      if (!target || target.id === id) return null;
-      const result = this.db
-        .prepare(`
-          UPDATE demo_sessions
-          SET auth_state = 'auth_required', linked_session_id = ?,
-              last_error_code = 'account_already_connected', updated_at = ?
-          WHERE id = ? AND auth_generation = ?
-        `)
-        .run(target.id, now, id, generation);
-      if (result.changes === 0) return null;
-      this.appendEvent(id, "auth.updated", null, now);
-      return target;
-    })();
+    const holder = this.getSessionByAccountKeyHash(accountKeyHash);
+    if (!holder || holder.id === successorId) return null;
+    const queued = this.db
+      .prepare("SELECT id FROM reply_jobs WHERE session_id = ? AND state = 'queued'")
+      .all(holder.id) as Array<{ id: string }>;
+    this.db
+      .prepare(`
+        UPDATE reply_jobs
+        SET state = 'failed', error_code = 'account_superseded', updated_at = ?
+        WHERE session_id = ? AND state = 'queued'
+      `)
+      .run(now, holder.id);
+    this.db
+      .prepare(`
+        UPDATE demo_sessions
+        SET auth_state = 'logged_out', account_key_hash = NULL, platform_persistent = 0,
+            expires_at = ?, linked_session_id = ?, last_error_code = 'superseded_by_relogin',
+            auth_generation = auth_generation + 1, run_generation = run_generation + 1,
+            updated_at = ?
+        WHERE id = ?
+      `)
+      .run(retiredExpiresAt, successorId, now, holder.id);
+    this.db.prepare("DELETE FROM encrypted_credentials WHERE session_id = ?").run(holder.id);
+    for (const reply of queued) {
+      this.appendEvent(holder.id, "reply.updated", reply.id, now);
+    }
+    this.appendEvent(holder.id, "auth.updated", null, now);
+    return holder;
   }
 
   getCredentialEnvelope(id: string): string | null {

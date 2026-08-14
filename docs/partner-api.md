@@ -314,6 +314,8 @@ curl --fail-with-body \
 
 建议每 2 秒轮询一次。进入 `succeeded` 或任一失败/终止状态后停止。页面关闭不会停止服务端托管；下次访问先调用 `GET /accounts` 找回账号。
 
+若扫码的视频号已被另一个账号托管，本次登录仍然成功：新账号成为该视频号唯一的托管容器并继承原账号的回复方式、招聘工号和业务微信二维码；原账号自动退役，从 `GET /accounts` 列表消失，按原 `accountId` 访问返回 `404 partner_account_not_found`。调用方应将保存的 `accountId` 更新为新账号。
+
 ## 8. 托管与回复配置
 
 ### GET /accounts/{accountId}/hosting

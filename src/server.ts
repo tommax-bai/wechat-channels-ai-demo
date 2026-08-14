@@ -404,8 +404,13 @@ function resolveConnectContext(
   const affinityName = connectAffinityCookieName(deps.config);
   const affinityId = request.cookies[affinityName];
   if (affinityId) {
-    const account = deps.sessions.resolveShared(affinityId);
-    if (account) return { session: account, accountBound: true };
+    const account = deps.sessions.resolveSharedFollowingHandoff(affinityId);
+    if (account) {
+      if (account.id !== affinityId) {
+        reply.setCookie(affinityName, account.id, cookieOptions(deps.config));
+      }
+      return { session: account, accountBound: true };
+    }
     reply.clearCookie(affinityName, cookieOptions(deps.config));
   }
 
@@ -419,7 +424,7 @@ function resolveConnectContext(
   }
 
   const linked = pending.linkedSessionId
-    ? deps.sessions.resolveShared(pending.linkedSessionId)
+    ? deps.sessions.resolveSharedFollowingHandoff(pending.linkedSessionId)
     : null;
   const account = linked ?? (pending.accountKeyHash ? pending : null);
   if (account) {

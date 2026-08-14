@@ -743,6 +743,55 @@ describe("Partner API", () => {
     expect(schemaRetry.json<AccountProjection>().login.state).toBe("waiting_scan");
   });
 
+  it("lets a fresh account take over an already-hosted Finder identity and retires the old container", async () => {
+    const fixture = await createFixture();
+    fixture.gateway.accountName = "finder-relogin";
+
+    const first = await createAccount(fixture.app);
+    await requestQr(fixture.app, first.accountId);
+    await fixture.workers.runOnce();
+    expect((await getLogin(fixture.app, first.accountId)).login.succeeded).toBe(true);
+
+    const savedSettings = await fixture.app.inject({
+      method: "PUT",
+      url: `/partner/v1/accounts/${first.accountId}/reply-settings`,
+      headers: partnerHeaders(),
+      payload: { provider: "funnel", jobNumber: "JOB-9876" },
+    });
+    expect(savedSettings.statusCode).toBe(200);
+
+    const second = await createAccount(fixture.app);
+    await requestQr(fixture.app, second.accountId);
+    await fixture.workers.runOnce();
+
+    const succeeded = await getLogin(fixture.app, second.accountId);
+    expect(succeeded.login).toMatchObject({ state: "succeeded", succeeded: true });
+    const successor = await getAccount(fixture.app, second.accountId);
+    expect(successor.replySettings).toMatchObject({
+      provider: "funnel",
+      jobNumber: "JOB-9876",
+    });
+
+    const retired = await fixture.app.inject({
+      method: "GET",
+      url: `/partner/v1/accounts/${first.accountId}`,
+      headers: partnerHeaders(),
+    });
+    expect(retired.statusCode).toBe(404);
+    expect(retired.json()).toEqual({ error: "partner_account_not_found" });
+
+    const listed = await fixture.app.inject({
+      method: "GET",
+      url: "/partner/v1/accounts",
+      headers: partnerHeaders(),
+    });
+    expect(listed.statusCode).toBe(200);
+    const listedIds = listed.json<{ items: AccountProjection[] }>()
+      .items.map((item) => item.accountId);
+    expect(listedIds).toContain(second.accountId);
+    expect(listedIds).not.toContain(first.accountId);
+  });
+
   it("selects reply provider and job, controls hosting, and reports platform expiry", async () => {
     const fixture = await createFixture();
     const account = await createAccount(fixture.app);

@@ -93,6 +93,24 @@ export class SessionService {
     return row;
   }
 
+  /**
+   * A container retired by a re-login records its successor in linked_session_id. Following that
+   * chain (bounded, in case of repeated re-logins) lets a browser holding an affinity to the old
+   * container land on the account's live container instead of being asked to scan again.
+   */
+  resolveSharedFollowingHandoff(
+    sessionId: string | undefined,
+    now = Date.now(),
+  ): SessionRow | null {
+    let cursor = sessionId ?? null;
+    for (let hop = 0; cursor !== null && hop < 5; hop += 1) {
+      const shared = this.resolveShared(cursor, now);
+      if (shared) return shared;
+      cursor = this.repository.getSession(cursor)?.linkedSessionId ?? null;
+    }
+    return null;
+  }
+
   listSharedSessions(now = Date.now()): SharedSessionSummary[] {
     return this.repository.listRetainedSessions(now).flatMap((session) => {
       const credential = this.readCredential(session.id);

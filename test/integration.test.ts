@@ -235,7 +235,7 @@ describe("multi-user demo flow", () => {
     expect(model.calls).toHaveLength(0);
   });
 
-  it("allows only one active demo session for the same platform account", async () => {
+  it("hands the shared platform account to the latest login and retires the earlier one", async () => {
     const server = requireApp(app);
     gateway.accountName = "finder-shared";
     const a = await bootstrap(server);
@@ -245,12 +245,31 @@ describe("multi-user demo flow", () => {
     await startLogin(server, b.cookie);
     await workers.runOnce();
 
-    const states = [
-      (await snapshot(server, a.cookie)).authState,
-      (await snapshot(server, b.cookie)).authState,
-    ];
-    expect(states).toContain("active");
-    expect(states).toContain("auth_required");
+    const responses = await Promise.all([a, b].map((visitor) => server.inject({
+      method: "GET",
+      url: "/api/session",
+      headers: { cookie: visitor.cookie },
+    })));
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 401]);
+    const winner = responses.find((response) => response.statusCode === 200);
+    if (!winner) throw new Error("missing surviving session");
+    const survivor = winner.json<SessionSnapshot>();
+    expect(survivor.authState).toBe("active");
+
+    const retired = database?.prepare(`
+      SELECT auth_state, account_key_hash, linked_session_id
+      FROM demo_sessions
+      WHERE last_error_code = 'superseded_by_relogin'
+    `).get() as {
+      auth_state: string;
+      account_key_hash: string | null;
+      linked_session_id: string | null;
+    } | undefined;
+    expect(retired).toMatchObject({
+      auth_state: "logged_out",
+      account_key_hash: null,
+      linked_session_id: survivor.sessionId,
+    });
   });
 
   it("persists the provisional platform session before bounded browser capture", async () => {

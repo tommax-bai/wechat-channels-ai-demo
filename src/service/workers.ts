@@ -236,36 +236,57 @@ export class WorkerCoordinator {
       "credentials",
     );
     try {
-      const completed = this.repository.completeAuthentication(
+      const result = this.repository.completeAuthentication(
         session.id,
         session.authGeneration,
         accountKeyHash,
         envelope,
         Date.now(),
+        Date.now() + this.config.pendingSessionTtlMs,
       );
-      if (completed) this.log.info("[demo] platform session validated; baseline pending");
-    } catch (error) {
-      const duplicate = error instanceof Error
-        && error.message.includes("demo_sessions.account_key_hash");
-      if (duplicate) {
-        const linked = this.repository.linkAuthenticationToExistingAccount(
-          session.id,
-          session.authGeneration,
-          accountKeyHash,
-          Date.now(),
-        );
-        if (linked) {
-          this.log.info("[demo] platform account already retained; login handoff recorded");
-          return;
-        }
+      if (!result.completed) return;
+      if (result.retired) {
+        this.carryAccountQrFromRetired(result.retired.id, session.id);
+        this.log.info("[demo] platform account re-login accepted; superseded container retired");
+      } else {
+        this.log.info("[demo] platform session validated; baseline pending");
       }
+    } catch {
       this.repository.setAuthStateIfGeneration(
         session.id,
         session.authGeneration,
         "auth_required",
-        duplicate ? "account_already_connected" : "credential_persist_failed",
+        "credential_persist_failed",
         Date.now(),
       );
+    }
+  }
+
+  /**
+   * The contact QR is a property of the account, not of the container that happened to host it:
+   * without this carry-over a re-login would silently stop every send_wechat_qr funnel action
+   * until someone re-uploads the image. Best-effort by design — the login itself must not fail
+   * over an undecryptable leftover asset.
+   */
+  private carryAccountQrFromRetired(retiredId: string, successorId: string): void {
+    const asset = this.repository.getAccountQrAsset(retiredId);
+    if (!asset || this.repository.getAccountQrAsset(successorId)) return;
+    try {
+      const stored = this.secureStore.decryptJson<unknown>(
+        asset.envelope,
+        retiredId,
+        "account-wechat-qr",
+      );
+      const parsed = parseStoredAccountWechatQr(stored);
+      this.repository.upsertAccountQrAsset({
+        sessionId: successorId,
+        envelope: this.secureStore.encryptJson(stored, successorId, "account-wechat-qr"),
+        mimeType: parsed.mimeType,
+        byteLength: parsed.bytes.byteLength,
+        updatedAt: Date.now(),
+      });
+    } catch {
+      this.log.warn("[demo] account QR carry-over failed; successor container starts without it");
     }
   }
 
